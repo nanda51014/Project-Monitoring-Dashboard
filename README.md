@@ -1,27 +1,40 @@
-# R2200 SiteTrack — M-523 Sharjah (Rev 6.2 · 07-Aug-26)
+# R2200 SiteTrack — M-523 Sharjah (Rev 7.0 · 17-Aug-26)
 
 Offline site-progress dashboard for project **R2200 / M-523**: progress entry, site diary,
 delay & IR/NCR registers, cost-weighted dashboards, S-curves, and drawings coloured by work
 stage (Structures 3D + Roads & Services strip-map), built from the baseline programme
 `523-25-Final for Submission.xer` and the issued S-curve.
 
-> ## ⚠️ Commercial sensitivity — read before enabling GitHub Pages
-> This app **embeds the full cost loading (AED 250.6M), quantities and programme float**.
-> On Free/Pro GitHub plans a **Pages site is publicly reachable even when the repository is
-> private** — access-restricted Pages needs GitHub Enterprise Cloud.
-> - **Safest:** keep the repo **private**, do **not** enable Pages; users download
->   `index.html` from the repo and open it in Chrome/Edge (it is fully self-contained).
-> - If you do enable Pages, treat the URL as public and share it accordingly.
-> The sign-in screen is a name picker, **not** authentication.
+> ## Note on what is published
+> A GitHub Pages site is publicly reachable on Free/Pro plans, even from a private
+> repository. The app embeds the programme, quantities and the **contract-value cost
+> loading** — reviewed and accepted as publishable; **no internal rates are in this
+> app or its data**. Programme float is present.
+> The **records** (progress, diary, delay events, IR/NCR) are not public once cloud
+> sync is set up — they sit behind sign-in and the Firestore rules.
 
 ## What's in this repo
 
 | File | Purpose |
 |---|---|
-| `index.html` | The complete app — baseline, S-curve, all views compiled in (~470 KB, self-contained) |
+| `index.html` | The complete app — baseline, S-curve, all views compiled in (~490 KB, self-contained) |
+| `firebase-config.js` | Cloud sync config. Delivered **commented out** = local/LAN mode. Fill it in to switch the whole team to cloud sync + real sign-in |
+| `firestore.rules` | Security rules — paste into the Firebase console (see `FIREBASE-SETUP.md`) |
+| `FIREBASE-SETUP.md` | Step-by-step: create the project, publish the rules, add the accounts |
 | `sw.js` | Service worker — caches the app shell so it works offline after the first visit |
 | `manifest.json`, `icon-*.png` | PWA manifest + icons ("Add to Home Screen" on phones) |
 | `.nojekyll` | Tells GitHub Pages to serve the files as-is |
+
+## Two ways to run it
+
+**A — Static only (as delivered).** Push and enable Pages. Everyone gets the app
+and works offline, but **each device keeps its own records** — consolidate with
+Exports → JSON backup → Import on the master device.
+
+**B — With cloud sync (recommended for a live team).** Follow `FIREBASE-SETUP.md`,
+fill in `firebase-config.js`, push. Then: real email/password sign-in, roles
+enforced by security rules, live cross-device sync, and imported baselines
+distributed to every device automatically.
 
 ## Deploy — GitHub Pages
 
@@ -41,20 +54,22 @@ All paths are relative, so it works at the repo sub-path as-is. Phones can then
 
 ## What is different from the office-LAN installation
 
-GitHub Pages is **static hosting — there is no server**, so:
+**Without** cloud sync configured, GitHub Pages is static hosting — there is no server, so:
 
 - **No device-to-device sync.** Each phone/PC keeps its own records in its own browser
   (IndexedDB). The status pill will show *Offline/queued* — that is normal here.
 - To consolidate, use the built-in workflow: each engineer sends the **Exports → Full data
   backup (JSON)**, and the planner merges it via **Exports → Import — merge an engineer's
-  daily file** on the master device. (The office-LAN package with `START-SERVER.bat`
-  remains the recommended multi-user setup — this Pages copy is best for a single master
-  device, viewers, or demos.)
-- **In-app XER import** works normally on each device, but the imported baseline is
-  **not** distributed to other devices (that push needs the LAN server). Import on each
-  device, or ship a new `index.html`.
+  daily file** on the master device.
+- **In-app XER import** works on each device, but the imported baseline is **not**
+  distributed to the others. Import on each device, or ship a new `index.html`.
 - **Clearing browser site data deletes the records on that device** — export the JSON
   backup regularly.
+
+**With** cloud sync configured (`FIREBASE-SETUP.md`), all four of those go away: records
+sync live, the baseline is distributed automatically, and the data lives in Firestore
+rather than only in each browser. The office-LAN server package is unchanged and remains
+a perfectly good option where there is no internet on site.
 
 ## Updating to a new revision
 

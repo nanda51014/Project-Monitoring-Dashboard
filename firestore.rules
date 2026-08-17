@@ -1,0 +1,93 @@
+rules_version = '2';
+
+/* ============================================================
+   R2200 SiteTrack — Firestore security rules
+   ------------------------------------------------------------
+   Model: every account is created in Firebase Console → Authentication,
+   and MUST have a matching profile document at users/{email} written by
+   the planner in the app (Setup → Users). The profile carries the role.
+   No profile → signed in but no access to anything.
+
+   Roles:  planner  — full control, incl. baseline + user list
+           engineer — reads everything, writes site records
+           viewer   — read-only
+
+   PASTE THIS in Firebase Console → Firestore Database → Rules → Publish.
+   Do NOT leave the default "test mode" rules in place: they allow the
+   whole internet to read and write this project.
+   ============================================================ */
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---------- helpers ---------- */
+    function signedIn() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+    function myKey() {
+      return request.auth.token.email.lower();
+    }
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(myKey())).data;
+    }
+    function hasProfile() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(myKey()));
+    }
+    function role() {
+      return hasProfile() ? profile().role : 'none';
+    }
+    function isPlanner()  { return role() == 'planner'; }
+    function canWrite()   { return role() == 'planner' || role() == 'engineer'; }
+    function canRead()    { return hasProfile(); }
+
+    /* A record must not claim a rev far in the future (clock-skew /
+       tampering guard: 1 day ahead of the server). Records are
+       last-write-wins on rev, so an absurd rev would pin a value. */
+    function revSane() {
+      return request.resource.data.rev is number
+             && request.resource.data.rev < request.time.toMillis() + 86400000;
+    }
+
+    /* ---------- user profiles ---------- */
+    /* Anyone signed in may read their OWN profile (the app needs it to
+       learn its role at sign-in). The planner may read and write all. */
+    match /users/{email} {
+      allow read:  if signedIn() && (email == myKey() || isPlanner());
+      allow write: if isPlanner();
+      /* BOOTSTRAP: to create the very first planner profile, publish these
+         rules, then temporarily change the line above to
+             allow write: if signedIn();
+         create your own users/{your-email} document with role "planner"
+         from the app, then change it back. (Or create that one document
+         by hand in the console — safer.) */
+    }
+
+    /* ---------- site records ---------- */
+    match /{store}/{docId} {
+      allow read: if canRead()
+                  && store in ['progress', 'diary', 'event', 'ir', 'photos'];
+      allow create, update: if canWrite()
+                  && store in ['progress', 'diary', 'event', 'ir', 'photos']
+                  && revSane();
+      /* Nothing is ever hard-deleted — the app voids records instead, so
+         the audit trail survives. Deletes are refused for everyone. */
+      allow delete: if false;
+    }
+
+    /* ---------- baseline distribution ---------- */
+    /* Everyone signed in reads the baseline; only the planner replaces it. */
+    match /meta/{docId} {
+      allow read:  if canRead();
+      allow write: if isPlanner();
+    }
+    match /baselineChunks/{chunkId} {
+      allow read:  if canRead();
+      allow write: if isPlanner();
+    }
+
+    /* ---------- default deny ---------- */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

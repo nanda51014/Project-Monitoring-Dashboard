@@ -295,7 +295,7 @@ canvas{display:block;width:100%}
    R2200 SiteTrack — 00 lib: helpers + storage layer
    ============================================================ */
 'use strict';
-const APP = { ver: '1.0.0', built: '2026-08-08' };
+const APP = { ver: '1.0.0', built: '2026-08-17' };
 
 /* ---------- tiny DOM ---------- */
 const $ = (s, r) => (r || document).querySelector(s);
@@ -1121,6 +1121,11 @@ function seedUsers() {
 }
 function saveUsers(u) {
   DB.setMeta('users', u);
+  // cloud mode: the user list lives in Firestore (rules allow only the planner)
+  if (typeof FB !== 'undefined' && FB.active) {
+    FB.saveUsers(u).catch(e => toast('Could not save users to the cloud: ' + e.message, true));
+    return;
+  }
   // publish to the server so every phone picks the list up on its next sync
   if (SYNC && SYNC.base) {
     fetch(SYNC.base + '/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1168,8 +1173,10 @@ function renderTop() {
   $('#sub').textContent = 'M-523 · Sharjah — ' + (ST.BL ? ST.BL.meta.project : '') + ' baseline';
   const p = DB.pending();
   const st = $('#stat');
+  const cloud = (typeof FB !== 'undefined' && FB.active);
   st.className = 'pill ' + (ST.online ? 'on' : (p ? 'q' : 'off'));
-  st.textContent = ST.online ? (p ? 'Syncing ' + p : 'Synced') : (p ? p + ' queued' : 'Offline');
+  st.textContent = ST.online ? (p ? 'Syncing ' + p : (cloud ? '☁ Synced' : 'Synced'))
+    : (p ? p + ' queued' : 'Offline');
   $('#who').innerHTML = ST.user ? '<b>' + esc(ST.user.name) + '</b>' + ROLES[ST.user.role] : '';
 }
 function render() {
@@ -4186,6 +4193,24 @@ const SYNC = {
     if (this.busy) return;
     this.busy = true;
     try {
+      /* ---- cloud mode: Firestore is the transport, listeners do the pulling ---- */
+      if (typeof FB !== 'undefined' && FB.active) {
+        const q = Object.values(DB.mem.outbox || {});
+        if (q.length) {
+          const recs = q.map(o => ({ store: o.store, rec: DB.mem[o.store][o.ref] })).filter(x => x.rec);
+          try {
+            await FB.push(recs);
+            DB.clearQueue(q.map(o => o.id));
+            ST.online = true; FB.err = null;
+            if (manual) toast('Synced to the cloud — ' + recs.length + ' record(s) up');
+          } catch (e) {
+            ST.online = false; FB.err = e && e.message;
+            if (manual) toast('Cloud sync failed: ' + e.message, true);
+          }
+        } else { ST.online = true; if (manual) toast('Up to date'); }
+        await FB.pushBaselineIfQueued();
+        return;
+      }
       if (!(await this.ping())) { if (manual) toast('No server on this network — data is safe on this device and will sync later.'); return; }
       /* push */
       const q = Object.values(DB.mem.outbox || {});
@@ -4497,10 +4522,15 @@ function vAdmin(m) {
     U.forEach((u, i) => {
       const box = el('div', { class: 'arow' });
       const g = el('div', { class: 'grid g4' });
+      const cloud = (typeof FB !== 'undefined' && FB.active);
       g.appendChild(fld('Name', inp('text', u.name, v => u.name = v, 'yel')));
-      g.appendChild(fld('Login ID', inp('text', u.id, v => u.id = v.toLowerCase().replace(/\s+/g, ''), 'yel')));
+      g.appendChild(fld(cloud ? 'Email (their sign-in)' : 'Login ID',
+        inp('text', cloud ? (u.email || u.id) : u.id, v => {
+          const k = v.trim().toLowerCase();
+          if (cloud) { u.email = k; u.id = k; } else u.id = k.replace(/\s+/g, '');
+        }, 'yel')));
       g.appendChild(fld('Role', sel(Object.keys(ROLES).map(k => ({ v: k, t: ROLES[k] })), u.role, v => { u.role = v; drawU(); })));
-      g.appendChild(fld('PIN (optional)', inp('text', u.pin || '', v => u.pin = v)));
+      if (!cloud) g.appendChild(fld('PIN (optional)', inp('text', u.pin || '', v => u.pin = v)));
       box.appendChild(g);
       if (u.role === 'engineer') {
         const ch = el('div', { class: 'chips', style: 'margin-top:6px' });
@@ -4530,7 +4560,12 @@ function vAdmin(m) {
       }
     }, '＋ Add user'));
   }
-  drawU(); m.appendChild(c);
+  drawU();
+  if (typeof FB !== 'undefined' && FB.active) c.appendChild(el('div', { class: 'note b', style: 'margin-top:9px' },
+    'Cloud mode: adding a person here creates their PROFILE (name, role, areas). Their actual login is created ' +
+    'once in the Firebase console → Authentication → Users → Add user, with the same email address. ' +
+    'Someone who signs in without a profile here is refused.'));
+  m.appendChild(c);
 
   /* server */
   const s = el('div', { class: 'card', style: 'margin-top:12px' }, [el('h3', {}, 'Server & sync')]);
@@ -4558,6 +4593,9 @@ function vAdmin(m) {
     'elapsed between baseline start and finish — the same basis as the issued weekly tracker. Change it here if a project ' +
     'uses different hours.'));
   m.appendChild(t);
+
+  /* cloud sync & sign-in */
+  if (typeof FB !== 'undefined') m.appendChild(fbSetupCard());
 
   /* XER import — baseline replacement + progress update */
   m.appendChild(xerImportCard());
@@ -4595,8 +4633,14 @@ function vAdmin(m) {
   m.appendChild(dz);
 }
 
-/* ---------------- LOGIN ---------------- */
+/* ---------------- LOGIN ----------------
+   Firebase configured → real email/password sign-in (FB module).
+   Otherwise → the local name picker, exactly as before. */
 function login() {
+  if (typeof FB !== 'undefined' && FB.enabled()) return fbLogin();
+  return localLogin();
+}
+function localLogin() {
   const U = users();
   const b = el('div');
   b.appendChild(el('div', { class: 'note b', style: 'margin-bottom:10px' },
@@ -4640,6 +4684,38 @@ async function boot() {
   const uid_ = DB.getMeta('user', null);
   const U = users();
   ST.user = U.find(u => u.id === uid_) || null;
+
+  /* ---- cloud mode: restore the Firebase session, or fall back offline ----
+     A phone on site with no signal cannot load the SDK from the CDN, so the
+     last signed-in profile is restored locally and capture continues; the
+     records sync as soon as it is back online and signed in. */
+  let fbPending = false;
+  if (typeof fbLoadConfigFile === 'function') { try { await fbLoadConfigFile(); } catch (e) {} }
+  if (typeof FB !== 'undefined' && FB.enabled()) {
+    fbPending = true;
+    const cached = DB.getMeta('fbProfile', null);
+    if (cached) ST.user = cached;                     // usable immediately, even offline
+    FB.load().then(ok => {
+      if (!ok) {
+        /* SDK unreachable (no signal on a first-ever open, or a firewall
+           blocking the CDN). With a cached profile we keep capturing; with
+           none, fall back to the local picker so the app is never a dead end. */
+        ST.online = false; renderTop();
+        if (!cached) {
+          toast('Cannot reach the cloud right now — working on this device only. Sign in when you are back online.', true);
+          localLogin();
+        }
+        return;
+      }
+      FB.sdk.auth.onAuthStateChanged(FB.auth, async u => {
+        if (u) {
+          try { await FB.onSignedIn(u); renderTop(); render(); }
+          catch (e) { toast(String(e.message || e), true); fbLogin(String(e.message || e)); }
+        } else if (!cached) { login(); }
+        else { ST.online = false; renderTop(); }       // session expired — keep working, sign in when convenient
+      });
+    });
+  }
   if (ST.user && ST.user.role === 'engineer') ST.filters = { win: true };   // engineers start on the current window
   $('#boot').remove();
   $('#app').classList.remove('hide');
@@ -4649,7 +4725,8 @@ async function boot() {
   $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
   if (mode === 'mem') setTimeout(() => toast('This browser is not saving data locally — export a backup before closing.', true), 1500);
   SYNC.init();
-  if (!ST.user) { render(); login(); } else render();
+  /* in cloud mode onAuthStateChanged decides whether to show the sign-in */
+  if (!ST.user && !fbPending) { render(); login(); } else render();
   window.addEventListener('resize', () => { clearTimeout(ST._rz); ST._rz = setTimeout(render, 350); });
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -5019,6 +5096,407 @@ function xerImportCard() {
       'baseline unless it is cleared there too. Continue?', async () => {
         DB.setMeta('blOverride', null); await reloadBaselineInPlace(); toast('Built-in baseline restored on this device');
       }, 'Revert') }, 'Revert this device to the built-in baseline'));
+  return c;
+}
+
+
+/* ==== 57-firebase.js ==== */
+/* ============================================================
+   57 — FIREBASE (optional cloud sync + real authentication)
+   ------------------------------------------------------------
+   Turns the GitHub-Pages copy into a real multi-device system:
+   · Firebase AUTH replaces the name-picker (F-07 closed) — email +
+     password, roles read from the users collection.
+   · FIRESTORE replaces the LAN server's /api/push + /api/pull, with
+     LIVE listeners (other devices update in seconds, not on a poll).
+   · The imported baseline is distributed through Firestore too, so
+     "Import revised baseline XER" still reaches every device.
+
+   DESIGN RULES
+   · Entirely OPTIONAL. No config → this module does nothing at all
+     and the app behaves exactly as before (standalone or LAN server).
+   · The app keeps its OWN IndexedDB as the offline store — Firestore
+     runs with its memory cache only, so there is one source of truth
+     on the device and offline capture / outbox / audit trail are
+     untouched.
+   · Records are never mutated locally for transport: photo data URLs
+     are split into their own documents on the way out and rehydrated
+     on the way in (an IR/event with photos would otherwise breach
+     Firestore's 1 MiB per-document limit and the EOT evidence would
+     silently fail to sync).
+   ============================================================ */
+
+/* Pull in firebase-config.js (sitting next to index.html) if we are served
+   over http(s). Never attempted for a standalone file:// copy, so the
+   single-file app stays exactly that — one file, no missing-resource noise. */
+function fbLoadConfigFile() {
+  return new Promise(res => {
+    if (typeof window === 'undefined' || window.R2200_FIREBASE) return res();
+    if (!location.protocol.startsWith('http')) return res();
+    const s = document.createElement('script');
+    s.src = 'firebase-config.js';
+    s.onload = () => res();
+    s.onerror = () => res();          // absent = local/LAN install, carry on
+    document.head.appendChild(s);
+  });
+}
+
+const FB = {
+  cfg: null, app: null, auth: null, db: null, sdk: null,
+  active: false,          // configured AND signed in
+  ready: false,           // SDK loaded
+  user: null,             // firebase auth user
+  unsub: [],              // snapshot unsubscribers
+  err: null,
+
+  /* ---------- configuration ---------- */
+  config() {
+    if (this.cfg) return this.cfg;
+    const w = (typeof window !== 'undefined' && window.R2200_FIREBASE) || null;
+    const m = DB.getMeta('fbConfig', null);
+    const c = w || m;
+    if (c && c.apiKey && c.projectId) this.cfg = c;
+    return this.cfg;
+  },
+  enabled() { return !!this.config(); },
+  sdkVersion() { const c = this.config(); return (c && c.sdkVersion) || '10.12.2'; },
+
+  /* ---------- SDK ---------- */
+  async load() {
+    if (this.ready) return true;
+    const c = this.config(); if (!c) return false;
+    const V = this.sdkVersion(), B = 'https://www.gstatic.com/firebasejs/' + V + '/';
+    try {
+      const [appM, authM, fsM] = await Promise.all([
+        import(B + 'firebase-app.js'),
+        import(B + 'firebase-auth.js'),
+        import(B + 'firebase-firestore.js')
+      ]);
+      this.sdk = { app: appM, auth: authM, fs: fsM };
+      this.app = appM.initializeApp({
+        apiKey: c.apiKey, authDomain: c.authDomain, projectId: c.projectId,
+        storageBucket: c.storageBucket, messagingSenderId: c.messagingSenderId, appId: c.appId
+      });
+      this.auth = authM.getAuth(this.app);
+      /* keep the session across restarts; the app's own DB stays the offline store */
+      try { await authM.setPersistence(this.auth, authM.browserLocalPersistence); } catch (e) {}
+      this.db = fsM.getFirestore(this.app);
+      this.ready = true;
+      return true;
+    } catch (e) {
+      this.err = e && e.message;
+      console.warn('[fb] SDK load failed', e);
+      return false;
+    }
+  },
+
+  /* ---------- auth ---------- */
+  async signIn(email, pw) {
+    if (!(await this.load())) throw new Error('Could not load the Firebase SDK. Check the internet connection, or the sdkVersion in firebase-config.js.');
+    const cred = await this.sdk.auth.signInWithEmailAndPassword(this.auth, String(email).trim(), pw);
+    return cred.user;
+  },
+  async signOutNow() {
+    this.stopSync();
+    if (this.auth) { try { await this.sdk.auth.signOut(this.auth); } catch (e) {} }
+    this.active = false; this.user = null; ST.user = null;
+    DB.setMeta('user', null);
+    render(); login();
+  },
+  emailKey(e) { return String(e || '').trim().toLowerCase(); },
+
+  /** the app-side profile (name / role / areas) for a signed-in account */
+  async profile(email) {
+    const { doc, getDoc } = this.sdk.fs;
+    const s = await getDoc(doc(this.db, 'users', this.emailKey(email)));
+    return s.exists() ? s.data() : null;
+  },
+
+  /** planner writes the user list; rules allow only the planner role */
+  async saveUsers(list) {
+    if (!this.active) return;
+    const { doc, writeBatch } = this.sdk.fs;
+    const b = writeBatch(this.db);
+    (list || []).forEach(u => {
+      const k = this.emailKey(u.email || u.id);
+      if (!k) return;
+      b.set(doc(this.db, 'users', k), clean({
+        email: k, name: u.name || k, role: u.role || 'engineer',
+        areas: u.areas || [], rev: Date.now()
+      }));
+    });
+    await b.commit();
+  },
+  async allUsers() {
+    const { collection, getDocs } = this.sdk.fs;
+    const snap = await getDocs(collection(this.db, 'users'));
+    const out = []; snap.forEach(d => out.push(d.data()));
+    return out;
+  },
+
+  /* ---------- sign-in completion: profile → ST.user → sync ---------- */
+  async onSignedIn(u) {
+    this.user = u;
+    const prof = await this.profile(u.email);
+    if (!prof) {
+      await this.signOutNow();
+      throw new Error('No profile for ' + u.email + '. The planner must add this address under Setup → Users before it can sign in.');
+    }
+    ST.user = { id: this.emailKey(u.email), name: prof.name || u.email,
+      role: prof.role || 'engineer', areas: prof.areas || [], email: u.email };
+    this.active = true;
+    DB.setMeta('user', ST.user.id);
+    DB.setMeta('fbProfile', ST.user);
+    ST.online = true;
+    this.startSync();
+    return ST.user;
+  },
+
+  /* ---------- record transport ---------- */
+  STORES: ['progress', 'diary', 'event', 'ir'],
+
+  /** strip photo data URLs out to their own docs; returns [cleanRec, photoDocs] */
+  splitPhotos(rec) {
+    if (!rec.photos || !rec.photos.length) return [rec, []];
+    const refs = [], docs = [];
+    rec.photos.forEach((p, i) => {
+      if (!p || !p.d) return;
+      const pid = rec.id + '__' + i;
+      docs.push({ id: pid, d: p.d, cap: p.cap || '', ts: p.ts || '', parent: rec.id, rev: rec.rev || Date.now() });
+      refs.push({ ref: pid, cap: p.cap || '', ts: p.ts || '' });
+    });
+    const copy = Object.assign({}, rec);
+    delete copy.photos;
+    copy.photoRefs = refs;
+    return [copy, docs];
+  },
+  /** pull the photo docs a record references and rebuild rec.photos */
+  async rehydrate(rec) {
+    if (!rec.photoRefs || !rec.photoRefs.length) return rec;
+    const { doc, getDoc } = this.sdk.fs;
+    const out = [];
+    for (const r of rec.photoRefs) {
+      try {
+        const s = await getDoc(doc(this.db, 'photos', r.ref));
+        if (s.exists()) { const d = s.data(); out.push({ d: d.d, cap: d.cap, ts: d.ts }); }
+      } catch (e) { console.warn('[fb] photo fetch', r.ref, e && e.message); }
+    }
+    const copy = Object.assign({}, rec);
+    delete copy.photoRefs;
+    copy.photos = out;
+    return copy;
+  },
+
+  /** push queued records (called from SYNC.now) */
+  async push(items) {
+    if (!this.active || !items.length) return 0;
+    const { doc, writeBatch } = this.sdk.fs;
+    let n = 0;
+    /* Firestore batches cap at 500 writes; photos count as writes too */
+    let b = writeBatch(this.db), inBatch = 0;
+    const flush = async () => { if (inBatch) { await b.commit(); b = writeBatch(this.db); inBatch = 0; } };
+    for (const it of items) {
+      if (this.STORES.indexOf(it.store) < 0 || !it.rec || !it.rec.id) continue;
+      const [rec, photos] = this.splitPhotos(it.rec);
+      for (const p of photos) {
+        b.set(doc(this.db, 'photos', p.id), clean(p)); inBatch++;
+        if (inBatch >= 450) await flush();
+      }
+      b.set(doc(this.db, it.store, rec.id), clean(rec)); inBatch++; n++;
+      if (inBatch >= 450) await flush();
+    }
+    await flush();
+    return n;
+  },
+
+  /** live listeners — other devices appear within seconds */
+  startSync() {
+    if (!this.active || this.unsub.length) return;
+    const { collection, query, where, onSnapshot } = this.sdk.fs;
+    const since = +DB.getMeta('fbPullRev', 0) || 0;
+    this.STORES.forEach(store => {
+      /* single-field range query — Firestore indexes this automatically */
+      const q = query(collection(this.db, store), where('rev', '>', since));
+      const un = onSnapshot(q, async snap => {
+        let max = +DB.getMeta('fbPullRev', 0) || 0, applied = 0;
+        for (const ch of snap.docChanges()) {
+          if (ch.type === 'removed') continue;
+          let rec = ch.doc.data();
+          if (rec.dev === ST.deviceId && !rec.photoRefs) { /* our own echo — still track rev */ }
+          try { rec = await this.rehydrate(rec); } catch (e) {}
+          const cur = DB.mem[store] && DB.mem[store][rec.id];
+          if (!cur || (rec.rev || 0) >= (cur.rev || 0)) {
+            if (DB.mem[store]) { DB.put(store, rec, true); applied++; }
+          }
+          if ((rec.rev || 0) > max) max = rec.rev;
+        }
+        if (max) DB.setMeta('fbPullRev', max);
+        if (applied) { renderTop(); try { render(); } catch (e) {} }
+      }, err => {
+        console.warn('[fb] listener', store, err && err.message);
+        this.err = err && err.message;
+        ST.online = false; renderTop();
+      });
+      this.unsub.push(un);
+    });
+    this.watchBaseline();
+  },
+  stopSync() { this.unsub.forEach(u => { try { u(); } catch (e) {} }); this.unsub = []; },
+
+  /* ---------- baseline distribution (replaces /api/baseline) ----------
+     Chunked: a slim baseline gzip+b64 runs a few hundred KB and a
+     Firestore document is capped at 1 MiB, so it is stored in slices
+     keyed by version — a device never mixes chunks of two versions. */
+  CHUNK: 400000,
+  async pushBaseline(ov) {
+    if (!this.active || !ov || !(ov.b64 || ov.raw)) return false;
+    const { doc, writeBatch, setDoc } = this.sdk.fs;
+    const payload = ov.b64 || ov.raw;
+    const isB64 = !!ov.b64;
+    const parts = [];
+    for (let i = 0; i < payload.length; i += this.CHUNK) parts.push(payload.slice(i, i + this.CHUNK));
+    let b = writeBatch(this.db), n = 0;
+    for (let i = 0; i < parts.length; i++) {
+      b.set(doc(this.db, 'baselineChunks', ov.ver + '__' + i), { s: parts[i] });
+      if (++n >= 400) { await b.commit(); b = writeBatch(this.db); n = 0; }
+    }
+    if (n) await b.commit();
+    await setDoc(doc(this.db, 'meta', 'baseline'), clean({
+      ver: ov.ver, basis: ov.basis, label: ov.label, at: ov.at, by: ov.by,
+      chunks: parts.length, enc: isB64 ? 'b64' : 'raw', rev: Date.now()
+    }));
+    return true;
+  },
+  /** push a locally-imported baseline that has not reached the cloud yet */
+  async pushBaselineIfQueued() {
+    const ov = DB.getMeta('blOverride', null);
+    if (!this.active || !ov || ov.pushed) return;
+    try {
+      if (await this.pushBaseline(ov)) {
+        ov.pushed = true; DB.setMeta('blOverride', ov);
+        toast('Imported baseline pushed to the cloud — every device will adopt it');
+      }
+    } catch (e) { console.warn('[fb] pushBaseline', e); }
+  },
+  async fetchBaseline(head) {
+    const { doc, getDoc } = this.sdk.fs;
+    let s = '';
+    for (let i = 0; i < head.chunks; i++) {
+      const d = await getDoc(doc(this.db, 'baselineChunks', head.ver + '__' + i));
+      if (!d.exists()) throw new Error('baseline chunk ' + i + ' missing');
+      s += d.data().s;
+    }
+    return s;
+  },
+  watchBaseline() {
+    const { doc, onSnapshot } = this.sdk.fs;
+    const un = onSnapshot(doc(this.db, 'meta', 'baseline'), async snap => {
+      if (!snap.exists()) return;
+      const head = snap.data();
+      const cur = DB.getMeta('blOverride', null);
+      if (cur && cur.ver === head.ver) return;
+      if (cur && !cur.pushed && String(cur.ver) > String(head.ver)) return;  // ours is newer, still queued
+      try {
+        const payload = await this.fetchBaseline(head);
+        const ov = { ver: head.ver, basis: head.basis, label: head.label, at: head.at, by: head.by, pushed: true };
+        if (head.enc === 'b64') ov.b64 = payload; else ov.raw = payload;
+        DB.setMeta('blOverride', ov);
+        await reloadBaselineInPlace();
+        toast('New baseline adopted from the cloud: ' + (head.label || head.ver));
+      } catch (e) { console.warn('[fb] baseline', e); toast('Could not read the cloud baseline: ' + e.message, true); }
+    }, e => console.warn('[fb] baseline listener', e && e.message));
+    this.unsub.push(un);
+  }
+};
+
+/* Firestore rejects `undefined` — strip it (and functions) everywhere */
+function clean(o) {
+  if (o === null || typeof o !== 'object') return o === undefined ? null : o;
+  if (Array.isArray(o)) return o.map(clean);
+  const out = {};
+  for (const k in o) {
+    const v = o[k];
+    if (v === undefined || typeof v === 'function') continue;
+    out[k] = clean(v);
+  }
+  return out;
+}
+
+/* ---------- sign-in screen (used instead of the name picker) ---------- */
+function fbLogin(msg) {
+  const b = el('div');
+  b.appendChild(el('div', { class: 'note b', style: 'margin-bottom:10px' },
+    'Sign in with the address the planner set up for you. Your records sync to every device on this project.'));
+  if (msg) b.appendChild(el('div', { class: 'note r', style: 'margin-bottom:10px' }, msg));
+  const em = inp('text', DB.getMeta('lastEmail', ''), null, 'yel');
+  const pw = inp('password', '', null, 'yel');
+  em.setAttribute('autocomplete', 'username'); em.setAttribute('inputmode', 'email');
+  pw.setAttribute('autocomplete', 'current-password');
+  b.appendChild(fld('Email', em));
+  b.appendChild(fld('Password', pw));
+  const go = async () => {
+    if (!em.value || !pw.value) return toast('Enter the email and password', true);
+    try {
+      toast('Signing in…');
+      const u = await FB.signIn(em.value, pw.value);
+      DB.setMeta('lastEmail', FB.emailKey(em.value));
+      await FB.onSignedIn(u);
+      closeModal();
+      ST.view = DB.getMeta('lastView', 'home');
+      render();
+      toast('Signed in as ' + ST.user.name);
+    } catch (e) {
+      const m = String(e && e.message || e);
+      fbLogin(/password|credential|user-not-found|invalid/i.test(m)
+        ? 'Email or password not recognised.' : m);
+    }
+  };
+  pw.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  modal('R2200 SiteTrack — sign in', b, [
+    { t: 'Work offline on this device', c: 'btn gh', f: () => { closeModal(); localLogin(); } },
+    { t: 'Sign in', c: 'btn p', f: go }
+  ]);
+}
+
+/* ---------- Setup card: cloud status + users ---------- */
+function fbSetupCard() {
+  const c = el('div', { class: 'card', style: 'margin-top:12px' }, [el('h3', {}, 'Cloud sync & sign-in (Firebase)')]);
+  const cfg = FB.config();
+  if (!cfg) {
+    c.appendChild(el('div', { class: 'note b' },
+      'Not configured on this device — the app is running on the local/LAN setup. ' +
+      'To switch this device to cloud sync, paste the Firebase config below (or deploy ' +
+      '<b>firebase-config.js</b> next to index.html so every device picks it up automatically).'));
+  } else {
+    c.appendChild(el('div', { class: 'note b', html:
+      'Project: <b>' + esc(cfg.projectId) + '</b> · SDK ' + esc(FB.sdkVersion()) +
+      ' · status: <b>' + (FB.active ? 'signed in as ' + esc(ST.user ? ST.user.name : '') : 'not signed in') + '</b>' +
+      (FB.err ? '<br><span style="color:#FF0000">Last error: ' + esc(FB.err) + '</span>' : '') }));
+  }
+
+  /* manual config (for the standalone HTML file) */
+  const ta = el('textarea', { class: 'yel', rows: 5, style: 'width:100%;font:11px monospace;margin-top:8px',
+    placeholder: '{"apiKey":"…","authDomain":"…","projectId":"…","appId":"…"}' });
+  if (cfg && !window.R2200_FIREBASE) ta.value = JSON.stringify(cfg);
+  c.appendChild(ta);
+  c.appendChild(el('div', { class: 'row', style: 'margin-top:7px' }, [
+    el('button', { class: 'btn', onclick: () => {
+      try {
+        const j = JSON.parse(ta.value);
+        if (!j.apiKey || !j.projectId) throw new Error('apiKey and projectId are required');
+        DB.setMeta('fbConfig', j); FB.cfg = null; FB.ready = false;
+        toast('Saved — reload the app to connect'); render();
+      } catch (e) { toast('Config is not valid JSON: ' + e.message, true); }
+    } }, 'Save config on this device'),
+    cfg ? el('button', { class: 'btn gh', onclick: () => ask('Disconnect cloud sync',
+      'This device goes back to local/LAN mode. Records already on this device are kept. Continue?', () => {
+        DB.setMeta('fbConfig', null); FB.cfg = null; toast('Disconnected — reload the app'); render();
+      }, 'Disconnect') }, 'Disconnect this device') : null,
+    FB.active ? el('button', { class: 'btn gh', onclick: () => FB.signOutNow() }, 'Sign out') : null
+  ].filter(Boolean)));
+  c.appendChild(el('div', { class: 'mini', style: 'margin-top:6px' },
+    'The Firebase config is not a secret — it identifies the project, it does not grant access. ' +
+    'Access is controlled by the sign-in and the Firestore security rules.'));
   return c;
 }
 </script>
