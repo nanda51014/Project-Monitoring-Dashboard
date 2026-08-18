@@ -5650,10 +5650,8 @@ function clean(o) {
 function fbLogin(msg) {
   const b = el('div');
   const dom = FB.loginDomain();
-  b.appendChild(el('div', { class: 'note b', style: 'margin-bottom:10px' },
-    dom ? 'Sign in with the name and password the planner set up for you — just your name, no email address. ' +
-          'Your records sync to every device on this project.'
-        : 'Sign in with the address the planner set up for you. Your records sync to every device on this project.'));
+  /* Deliberately just the two fields. The domain completion is machinery the
+     site team does not need to see — it still happens in FB.loginKey(). */
   if (msg) b.appendChild(el('div', { class: 'note r', style: 'margin-bottom:10px' }, msg));
   const em = inp('text', FB.loginShow(DB.getMeta('lastEmail', '')), null, 'yel');
   const pw = inp('password', '', null, 'yel');
@@ -5662,17 +5660,6 @@ function fbLogin(msg) {
   pw.setAttribute('autocomplete', 'current-password');
   b.appendChild(fld(dom ? 'Name' : 'Email', em));
   b.appendChild(fld('Password', pw));
-  let hint = null;
-  if (dom) {
-    /* show the completed address as they type — the mechanism stays visible,
-       and a typo in the name is obvious before the password is refused */
-    hint = el('div', { class: 'mini', style: 'margin:-4px 0 8px' });
-    const drawHint = () => hint.textContent =
-      'Signs in as ' + FB.loginKey(em.value.trim() || 'yourname') + ' — the app adds that part.';
-    drawHint();
-    em.addEventListener('input', drawHint);
-    b.appendChild(hint);
-  }
   const go = async () => {
     if (!em.value || !pw.value) return toast('Enter the ' + (dom ? 'name' : 'email') + ' and password', true);
     try {
