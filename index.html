@@ -861,9 +861,25 @@ function xerPct(t, late) {
    The issued curve gives the project % at the data date. We find the
    date on the XER's own cost spread that reaches the same %, and read
    every activity at THAT date. An activity therefore still runs 0 → 100
-   across its own span — only the point we read it at moves. A small
-   residual factor (< ~1%, one day's worth of curve) closes the last gap
-   so the roll-up lands on the issued figure.
+   across its own span — only the point we read it at moves.
+
+   The binary search brackets the target between two ADJACENT days
+   (lo, hi); the issued figure almost always falls part-way between them.
+   That last fraction of a day is closed by reading each activity at BOTH
+   days and interpolating between the two readings with a single weight w
+   per data date — i.e. the read point lands at lo + w days. Because the
+   roll-up is cost-weighted and linear in w, solving
+     target = (1-w)·xerPct(lo) + w·xerPct(hi)
+   makes every breakdown reconcile to the issued figure exactly.
+
+   Interpolating the READ DATE — rather than scaling the resulting
+   percentages — is what keeps the 0 % and 100 % ends honest: an activity
+   already finished by day lo reads 100 at both ends, so it interpolates
+   to exactly 100, and one not yet started reads 0 at both ends. Scaling
+   the percentages instead multiplied EVERY activity by a residual factor,
+   which pushed finished activities off 100 (e.g. a 0.9919 factor showed
+   them all as 99.19 %) and pushed them above 100 when the factor exceeded
+   one, where the clamp then silently broke the reconciliation.
    ------------------------------------------------------------ */
 let _alMap = {}, _alN = 0;
 function align(dd) {
@@ -872,25 +888,29 @@ function align(dd) {
   const lo0 = ST.BL.meta.plan_start, hi0 = ST.BL.meta.scd_end;
   const solve = (late) => {
     const target = curvePct(dd, late);
-    if (target <= 0) return { t: lo0, f: 1 };
-    if (target >= 100) return { t: hi0, f: 1 };
+    if (target <= 0) return { lo: lo0, hi: lo0, w: 0 };
+    if (target >= 100) return { lo: hi0, hi: hi0, w: 0 };
     let lo = lo0, hi = hi0;
     for (let i = 0; i < 12 && days(lo, hi) > 1; i++) {
       const mid = addD(lo, Math.floor(days(lo, hi) / 2));
       if (xerPct(mid, late) < target) lo = mid; else hi = mid;
     }
-    const t = xerPct(hi, late) - target <= target - xerPct(lo, late) ? hi : lo;
-    const at = xerPct(t, late);
-    return { t: t, f: at > 0 ? target / at : 1 };
+    /* search invariant: xerPct(lo) < target <= xerPct(hi) */
+    const pl = xerPct(lo, late), ph = xerPct(hi, late);
+    const w = ph > pl ? Math.min(1, Math.max(0, (target - pl) / (ph - pl))) : 0;
+    return { lo: lo, hi: hi, w: w };
   };
   const e = solve(false), l = solve(true);
   _alN++;
-  return (_alMap[dd] = { dd: dd, te: e.t, tl: l.t, fe: e.f, fl: l.f,
+  return (_alMap[dd] = { dd: dd, te: e.lo, the: e.hi, we: e.w,
+                         tl: l.lo, thl: l.hi, wl: l.w,
                          isE: curvePct(dd, false), isL: curvePct(dd, true) });
 }
 function plannedPct(a, dd, late) {
   const A = align(dd);
-  const v = plannedRaw(a, late ? A.tl : A.te, late) * (late ? A.fl : A.fe);
+  const lo = late ? A.tl : A.te, hi = late ? A.thl : A.the, w = late ? A.wl : A.we;
+  const r0 = plannedRaw(a, lo, late);
+  const v = w > 0 ? r0 + (plannedRaw(a, hi, late) - r0) * w : r0;
   return Math.min(100, Math.max(0, v));
 }
 
