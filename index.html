@@ -4720,10 +4720,13 @@ function vAdmin(m) {
       const g = el('div', { class: 'grid g4' });
       const cloud = (typeof FB !== 'undefined' && FB.active);
       g.appendChild(fld('Name', inp('text', u.name, v => u.name = v, 'yel')));
-      g.appendChild(fld(cloud ? 'Email (their sign-in)' : 'Login ID',
-        inp('text', cloud ? (u.email || u.id) : u.id, v => {
+      const cloudDom = cloud && FB.loginDomain();
+      g.appendChild(fld(cloud ? (cloudDom ? 'Sign-in name' : 'Email (their sign-in)') : 'Login ID',
+        inp('text', cloud ? FB.loginShow(u.email || u.id) : u.id, v => {
           const k = v.trim().toLowerCase();
-          if (cloud) { u.email = k; u.id = k; } else u.id = k.replace(/\s+/g, '');
+          /* store the COMPLETED address — it is the profile document id the
+             rules match on, so it must not depend on what was typed here */
+          if (cloud) { u.email = FB.loginKey(k); u.id = u.email; } else u.id = k.replace(/\s+/g, '');
         }, 'yel')));
       g.appendChild(fld('Role', sel(Object.keys(ROLES).map(k => ({ v: k, t: ROLES[k] })), u.role, v => { u.role = v; drawU(); })));
       if (!cloud) g.appendChild(fld('PIN (optional)', inp('text', u.pin || '', v => u.pin = v)));
@@ -4759,7 +4762,10 @@ function vAdmin(m) {
   drawU();
   if (typeof FB !== 'undefined' && FB.active) c.appendChild(el('div', { class: 'note b', style: 'margin-top:9px' },
     'Cloud mode: adding a person here creates their PROFILE (name, role, areas). Their actual login is created ' +
-    'once in the Firebase console → Authentication → Users → Add user, with the same email address. ' +
+    'once in the Firebase console → Authentication → Users → Add user' +
+    (FB.loginDomain()
+      ? ', as “thatname@' + FB.loginDomain() + '” — type only the name here and the app adds the rest. '
+      : ', with the same email address. ') +
     'Someone who signs in without a profile here is refused.'));
   m.appendChild(c);
 
@@ -5387,9 +5393,9 @@ const FB = {
   },
 
   /* ---------- auth ---------- */
-  async signIn(email, pw) {
+  async signIn(name, pw) {
     if (!(await this.load())) throw new Error('Could not load the Firebase SDK. Check the internet connection, or the sdkVersion in firebase-config.js.');
-    const cred = await this.sdk.auth.signInWithEmailAndPassword(this.auth, String(email).trim(), pw);
+    const cred = await this.sdk.auth.signInWithEmailAndPassword(this.auth, this.loginKey(name), pw);
     return cred.user;
   },
   async signOutNow() {
@@ -5399,7 +5405,28 @@ const FB = {
     DB.setMeta('user', null);
     render(); login();
   },
-  emailKey(e) { return String(e || '').trim().toLowerCase(); },
+  /* ---------- sign-in identity ----------
+     People sign in with a NAME and a password — nothing else. Firebase Auth
+     still needs an address, so `loginDomain` in firebase-config.js completes
+     one behind the scenes: "Ahmed K" -> "ahmed.k@r2200.local". The domain
+     never has to exist and no mail is ever sent. An address typed in full is
+     left alone, so deleting loginDomain returns the app to real email
+     addresses and existing accounts keep working either way.
+     This same key is the users/{id} profile document id and what the
+     security rules match on, so completion must happen in ONE place. */
+  loginDomain() { const c = this.config(); return (c && c.loginDomain) || ''; },
+  loginKey(v) {
+    const s = String(v || '').trim().toLowerCase();
+    if (!s || s.indexOf('@') >= 0) return s;
+    const d = this.loginDomain();
+    return d ? s.replace(/\s+/g, '.') + '@' + d : s;
+  },
+  /** what the person types, without the machinery — for labels and messages */
+  loginShow(v) {
+    const s = String(v || '').trim().toLowerCase(), d = this.loginDomain();
+    return (d && s.slice(-(d.length + 1)) === '@' + d) ? s.slice(0, -(d.length + 1)) : s;
+  },
+  emailKey(e) { return this.loginKey(e); },
 
   /** the app-side profile (name / role / areas) for a signed-in account */
   async profile(email) {
@@ -5436,7 +5463,8 @@ const FB = {
     const prof = await this.profile(u.email);
     if (!prof) {
       await this.signOutNow();
-      throw new Error('No profile for ' + u.email + '. The planner must add this address under Setup → Users before it can sign in.');
+      throw new Error('No profile for ' + this.loginShow(u.email) + '. The planner must add ' +
+        (this.loginDomain() ? 'this name' : 'this address') + ' under Setup → Users before it can sign in.');
     }
     ST.user = { id: this.emailKey(u.email), name: prof.name || u.email,
       role: prof.role || 'engineer', areas: prof.areas || [], email: u.email };
@@ -5621,17 +5649,32 @@ function clean(o) {
 /* ---------- sign-in screen (used instead of the name picker) ---------- */
 function fbLogin(msg) {
   const b = el('div');
+  const dom = FB.loginDomain();
   b.appendChild(el('div', { class: 'note b', style: 'margin-bottom:10px' },
-    'Sign in with the address the planner set up for you. Your records sync to every device on this project.'));
+    dom ? 'Sign in with the name and password the planner set up for you — just your name, no email address. ' +
+          'Your records sync to every device on this project.'
+        : 'Sign in with the address the planner set up for you. Your records sync to every device on this project.'));
   if (msg) b.appendChild(el('div', { class: 'note r', style: 'margin-bottom:10px' }, msg));
-  const em = inp('text', DB.getMeta('lastEmail', ''), null, 'yel');
+  const em = inp('text', FB.loginShow(DB.getMeta('lastEmail', '')), null, 'yel');
   const pw = inp('password', '', null, 'yel');
-  em.setAttribute('autocomplete', 'username'); em.setAttribute('inputmode', 'email');
+  em.setAttribute('autocomplete', 'username');
+  if (dom) em.setAttribute('placeholder', 'e.g. nanda'); else em.setAttribute('inputmode', 'email');
   pw.setAttribute('autocomplete', 'current-password');
-  b.appendChild(fld('Email', em));
+  b.appendChild(fld(dom ? 'Name' : 'Email', em));
   b.appendChild(fld('Password', pw));
+  let hint = null;
+  if (dom) {
+    /* show the completed address as they type — the mechanism stays visible,
+       and a typo in the name is obvious before the password is refused */
+    hint = el('div', { class: 'mini', style: 'margin:-4px 0 8px' });
+    const drawHint = () => hint.textContent =
+      'Signs in as ' + FB.loginKey(em.value.trim() || 'yourname') + ' — the app adds that part.';
+    drawHint();
+    em.addEventListener('input', drawHint);
+    b.appendChild(hint);
+  }
   const go = async () => {
-    if (!em.value || !pw.value) return toast('Enter the email and password', true);
+    if (!em.value || !pw.value) return toast('Enter the ' + (dom ? 'name' : 'email') + ' and password', true);
     try {
       toast('Signing in…');
       const u = await FB.signIn(em.value, pw.value);
@@ -5644,7 +5687,7 @@ function fbLogin(msg) {
     } catch (e) {
       const m = String(e && e.message || e);
       fbLogin(/password|credential|user-not-found|invalid/i.test(m)
-        ? 'Email or password not recognised.' : m);
+        ? (dom ? 'Name or password not recognised.' : 'Email or password not recognised.') : m);
     }
   };
   pw.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });

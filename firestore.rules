@@ -3,16 +3,29 @@ rules_version = '2';
 /* ============================================================
    R2200 SiteTrack — Firestore security rules
    ------------------------------------------------------------
-   Model: every account is created in Firebase Console → Authentication,
-   and MUST have a matching profile document at users/{email} written by
-   the planner in the app (Setup → Users). The profile carries the role.
-   No profile → signed in but no access to anything.
+   SIGN-IN MODEL — a name and a password, nothing else.
+
+   People type only their NAME. Firebase Auth still needs an address, so
+   `loginDomain` in firebase-config.js completes one behind the scenes:
+
+       nanda    ->  nanda@r2200.local
+       Ahmed K  ->  ahmed.k@r2200.local        (a space becomes a dot)
+
+   The domain never has to exist and no mail is ever sent. That completed
+   address is three things at once, and they must match exactly:
+     · the account in Console -> Authentication -> Users
+     · the profile document id at users/{name@r2200.local}
+     · request.auth.token.email, which these rules match on
+
+   Every account MUST have a profile document, written by the planner in
+   the app (Setup -> Users). The profile carries the role. Signed in with
+   no profile = access to nothing. That is deliberate, not a fault.
 
    Roles:  planner  — full control, incl. baseline + user list
            engineer — reads everything, writes site records
            viewer   — read-only
 
-   PASTE THIS in Firebase Console → Firestore Database → Rules → Publish.
+   PASTE THIS in Firebase Console -> Firestore Database -> Rules -> Publish.
    Do NOT leave the default "test mode" rules in place: they allow the
    whole internet to read and write this project.
    ============================================================ */
@@ -20,10 +33,28 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    /* ---------- helpers ---------- */
+    /* ---------- who is asking ----------
+       Password sign-in ONLY. The provider check rejects anonymous, Google,
+       phone and custom-token sessions outright, so nothing but a name and
+       a password can reach any document — even if another provider is
+       switched on in the console by mistake.
+
+       One caveat worth knowing: passwordless "Email link" sign-in also
+       reports itself as 'password', so rules cannot tell it apart. Leave
+       Email link DISABLED in Console -> Authentication -> Sign-in method
+       (the setup guide already says to). That console switch is the only
+       control for it.
+
+       Do NOT add an email_verified check here. These addresses are on a
+       domain that does not exist, no verification mail can ever arrive,
+       and requiring it would lock out every account including yours. */
     function signedIn() {
-      return request.auth != null && request.auth.token.email != null;
+      return request.auth != null
+             && request.auth.token.email != null
+             && request.auth.token.firebase.sign_in_provider == 'password';
     }
+
+    /* the completed address, lower-cased — the profile document id */
     function myKey() {
       return request.auth.token.email.lower();
     }
@@ -50,16 +81,36 @@ service cloud.firestore {
 
     /* ---------- user profiles ---------- */
     /* Anyone signed in may read their OWN profile (the app needs it to
-       learn its role at sign-in). The planner may read and write all. */
-    match /users/{email} {
-      allow read:  if signedIn() && (email == myKey() || isPlanner());
-      allow write: if isPlanner();
-      /* BOOTSTRAP: to create the very first planner profile, publish these
-         rules, then temporarily change the line above to
-             allow write: if signedIn();
-         create your own users/{your-email} document with role "planner"
-         from the app, then change it back. (Or create that one document
-         by hand in the console — safer.) */
+       learn its role at sign-in). The planner may read and write all.
+
+       A profile is the thing that grants access, so it is validated:
+       the document id must be the lower-case completed address, the
+       `email` field must repeat it, and the role must be one the app
+       understands. That stops a typo or a stray capital creating a
+       profile that silently never matches anyone's sign-in. */
+    function profileSane(id) {
+      return id == id.lower()
+             && request.resource.data.email == id
+             && request.resource.data.role in ['planner', 'engineer', 'viewer'];
+    }
+    match /users/{loginId} {
+      allow read:   if signedIn() && (loginId == myKey() || isPlanner());
+      allow create,
+            update: if isPlanner() && profileSane(loginId);
+      allow delete: if isPlanner();
+      /* BOOTSTRAP — the first planner profile.
+         These rules let only a planner write profiles, and before the
+         first one exists nobody is a planner. Create that ONE document by
+         hand in Console -> Firestore -> Data (console writes bypass rules
+         entirely, so nothing here has to be loosened):
+             collection  users
+             document id nanda@r2200.local     <- the full completed address
+             email       nanda@r2200.local     <- the same string again
+             name        Nanda
+             role        planner
+             areas       []                    (empty array)
+             rev         1
+         Everyone else is added from inside the app, Setup -> Users. */
     }
 
     /* ---------- site records ---------- */
@@ -91,3 +142,17 @@ service cloud.firestore {
     }
   }
 }
+
+/* ============================================================
+   OPTIONAL — lock sign-in to the project domain
+   ------------------------------------------------------------
+   The rules above accept any password account that has a profile. To also
+   refuse anything outside r2200.local, add this line to signedIn():
+
+       && request.auth.token.email.lower().matches('.*@r2200[.]local')
+
+   Only do that while `loginDomain` is set in firebase-config.js. The
+   setup guide says you may delete that line to go back to real email
+   addresses — with the domain lock published, doing so locks out every
+   account including your own, and the only way back is the console.
+   ============================================================ */
