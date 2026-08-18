@@ -2269,10 +2269,24 @@ function structModel() {
       if (B.supp[loc]) {
         const g = B.supp[loc];
         for (const k in SUPP_ELEM) if (SUPP_ELEM[k].test(elem)) { g[k].push(a); return; }
-        /* pier column family (Pier Column / Piers / Pier Head codes) → by name */
-        if (elem === 'Pier Head' || /pier head/i.test(a.n)) g.head.push(a);
-        else if (/\bfla(?:re|ir)\b/i.test(a.n)) g.flare.push(a);
-        else g.shaft.push(a);                         // shaft + shop drawings + uncoded support acts
+        /* pier column family (Pier Column / Piers / Pier Head codes) → by name.
+           ONLY genuine column work qualifies. Utility diversions carry a support
+           as their Element Location ("Irrigation @ B03-P04" coded Bridges=B2,
+           Element Location=P06) while carrying NO Bridge Elements code. Letting
+           the fall-through absorb them into the shaft stopped the element ever
+           reading Complete and skewed its cost-weighted % with work that is not
+           part of it. Anything located at a support but not an element OF it
+           goes to B.other, where it stays visible, clickable and in the
+           conservation total but no longer drives an element's status. */
+        const isCol = elem === 'Pier Column' || elem === 'Pier Head' ||
+                      /\bpier\s*(shaft|flare|flair|head|column)\b/i.test(a.n);
+        if (isCol) {
+          if (elem === 'Pier Head' || /pier head/i.test(a.n)) g.head.push(a);
+          else if (/\bfla(?:re|ir)\b/i.test(a.n)) g.flare.push(a);
+          else g.shaft.push(a);
+          return;
+        }
+        B.other.push(a);
         return;
       }
       if (elem === 'Deck Slab') {                     // section-level deck rollups, no span code
@@ -3533,7 +3547,8 @@ function vStruct(m) {
       const gid = regGroup(B.other, B.title + ' — activities not location-coded (not drawn)');
       c.appendChild(el('div', { class: 'mini', style: 'margin-top:4px;cursor:pointer',
         onclick: () => structDetail(gid, '') },
-        'ⓘ ' + B.other.length + ' activities without a span/support code are not drawn (rollups, section-level items) — ' +
+        'ⓘ ' + B.other.length + ' activities are not drawn (rollups, section-level items, and utility works '
+        + 'located at a support but not part of any structural element) — ' +
         n2(st.pct) + '% · click to list. They still count in every dashboard figure.'));
     }
     m.appendChild(c);
