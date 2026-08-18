@@ -2675,11 +2675,19 @@ function drawBridge(parent, B, ix) {
       const gidS = regGroup(scOnly.concat(strike), B.id + ' · ' + sec + ' · ' + sp + ' — Scaffolding / falsework (+ striking)');
       const grp = sv('g', {}, svg);
       const col = scSt.done ? '#2E6DA8' : '#4A90D9';
-      const nP = Math.max(7, Math.floor(uSpan / 9));
-      const uAt = k2 => u0 + 8 + (uSpan - 16) * (k2 / (nP - 1));
+      /* hold the falsework clear of both supports — the pile cap reaches u±20
+         and the pier head u±13, so the old flat 8-unit inset ran the props
+         through them as soon as scaffolding progress was entered */
+      const clU = k2 => /^Abutment/.test(B.supports[k2]) ? 14 : 22;
+      let sU0 = u0 + clU(i), sU1 = u1 - clU(i + 1);
+      if (sU1 - sU0 < uSpan * 0.3) {
+        const midU = (u0 + u1) / 2, halfU = uSpan * 0.15; sU0 = midU - halfU; sU1 = midU + halfU;
+      }
+      const nP = Math.max(5, Math.floor((sU1 - sU0) / 9));
+      const uAt = k2 => sU0 + (sU1 - sU0) * (k2 / (nP - 1));
       /* tinted tower panel behind each row so the falsework reads as a body, not threads */
       [10, wv - 10].forEach(vv => {
-        const q = [P(u0 + 8, vv, 0), P(u1 - 8, vv, 0), P(u1 - 8, vv, wBerT), P(u0 + 8, vv, wBerT)];
+        const q = [P(sU0, vv, 0), P(sU1, vv, 0), P(sU1, vv, wBerT), P(sU0, vv, wBerT)];
         const pg = sv('polygon', { points: q.map(p => p.join(',')).join(' '), fill: col, stroke: 'none' }, grp);
         pg.setAttribute('fill-opacity', 0.12);
       });
@@ -2698,7 +2706,7 @@ function drawBridge(parent, B, ix) {
         }
         /* ledgers at three levels */
         [wBerT - 3, wBerT * 0.62, wBerT * 0.28].forEach(wl => {
-          const a1 = P(u0 + 8, vv, wl), a2 = P(u1 - 8, vv, wl);
+          const a1 = P(sU0, vv, wl), a2 = P(sU1, vv, wl);
           sv('line', { x1: a1[0], y1: a1[1], x2: a2[0], y2: a2[1], stroke: col, 'stroke-width': 2 }, grp);
         });
       });
@@ -3226,6 +3234,16 @@ function drawBridgeElev(parent, B, ix) {
     paintEl(pg, stt, acts && acts.length ? regGroup(acts, label) : null, label);
     return stt;
   };
+  /* Half-width of the widest thing drawn at a support, so the falsework under
+     a span can be held clear of the structure it stands beside. Deck-slab
+     scaffolding belongs BETWEEN the supports — drawing it across them made it
+     run straight through the pier head, flare and pile cap the moment any
+     scaffolding progress was entered. */
+  const suppClear = i => {
+    const s2 = B.supports[i];
+    if (/^Abutment/.test(s2)) return 18;                      // header beam
+    return B.supp[s2].head.length ? 24 : 22;                  // pier head, else pile cap
+  };
   /* GL line */
   sv('line', { x1: mx - 26, y1: yGL, x2: W - mx + 26, y2: yGL, stroke: '#8a8072', 'stroke-width': 1, 'stroke-dasharray': '6 4' }, svg);
   sv('text', { x: mx - 30, y: yGL + 3.5, 'font-size': 8, fill: '#7A8888', 'text-anchor': 'end' }, svg).textContent = 'GL';
@@ -3245,13 +3263,18 @@ function drawBridgeElev(parent, B, ix) {
       const colS = scSt.done ? '#2E6DA8' : '#4A90D9';
       const gidS = regGroup(sc.concat(stk), B.id + ' · ' + sec + ' · ' + sp + ' — Scaffolding / falsework (+ striking)');
       const gsc = sv('g', {}, svg);
-      const nL = Math.max(5, Math.floor((x1 - x0) / 10));
+      /* stand the falsework clear of both supports */
+      let sx0 = X(i) + suppClear(i) + 4, sx1 = X(i + 1) - suppClear(i + 1) - 4;
+      if (sx1 - sx0 < (x1 - x0) * 0.3) {          // very short span — keep a token bay centred
+        const mid = (x0 + x1) / 2, half = (x1 - x0) * 0.15; sx0 = mid - half; sx1 = mid + half;
+      }
+      const nL = Math.max(4, Math.floor((sx1 - sx0) / 10));
       for (let k = 0; k < nL; k++) {
-        const xx = x0 + 5 + (x1 - x0 - 10) * (k / (nL - 1));
+        const xx = sx0 + (sx1 - sx0) * (k / (nL - 1));
         sv('line', { x1: xx, y1: dY + dH, x2: xx, y2: yGL, stroke: colS, 'stroke-width': 2.4 }, gsc);
       }
       [dY + dH + 8, (dY + dH + yGL) / 2, yGL - 8].forEach(yy =>
-        sv('line', { x1: x0 + 5, y1: yy, x2: x1 - 5, y2: yy, stroke: colS, 'stroke-width': 1.4 }, gsc));
+        sv('line', { x1: sx0, y1: yy, x2: sx1, y2: yy, stroke: colS, 'stroke-width': 1.4 }, gsc));
       gsc.style.cursor = 'pointer';
       gsc.addEventListener('click', () => structDetail(gidS));
       sv('title', {}, gsc).textContent = sec + ' ' + sp + ' — Scaffolding ' + n2(scSt.pct) + '%';
