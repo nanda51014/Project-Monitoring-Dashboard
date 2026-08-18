@@ -19,7 +19,15 @@ window.R2200_FIREBASE = {
   projectId:         "project-monitoring-dashb-f0284",
   storageBucket:     "project-monitoring-dashb-f0284.firebasestorage.app",
   messagingSenderId: "219693319830",
-  appId:             "1:219693319830:web:ae89b01135ce165561e4b7"
+  appId:             "1:219693319830:web:ae89b01135ce165561e4b7",
+
+  // SIGN IN WITH A NAME, NOT AN EMAIL.
+  // Firebase Auth always needs an address, so the app completes a plain name
+  // with this domain behind the scenes:  "nanda" -> "nanda@r2200.local".
+  // People only ever type their name. In the Firebase console you create the
+  // account as name@r2200.local. The domain does not need to exist.
+  // Remove this line to go back to real email addresses.
+  loginDomain: "r2200.local"
 
   // Optional: pin the Firebase JS SDK version loaded from gstatic.
   // Leave it out to use the default (10.12.2). Only change this if the

@@ -50,10 +50,26 @@ app stays exactly as it is today (standalone file, or the office-LAN server).
 
 ## 6. Create the accounts
 
+> **This project signs in with a NAME, not an email.** Firebase Auth always wants an
+> address, so `firebase-config.js` sets `loginDomain: "r2200.local"` and the app
+> completes the name behind the scenes — someone typing `nanda` is signed in as
+> `nanda@r2200.local`. **The domain does not need to exist.** Your people only ever
+> type their name.
+
 For **each person** (you first):
 
-1. Authentication → **Users** tab → **Add user** → email + a starting password →
-   **Add user**. Tell them to change it later via a password reset.
+1. Authentication → **Users** tab → **Add user**.
+2. Email: **`theirname@r2200.local`** — all lower case, no spaces
+   (a name with a space becomes a dot: *Ahmed K* → `ahmed.k@r2200.local`).
+3. Set a starting password (6 characters minimum — Firebase's rule) → **Add user**.
+4. Give them the name and password. They type only the name.
+
+**Changing a password later:** with no real mailbox there is no self-service reset —
+you change it in Authentication → Users → ⋮ → **Reset password / Edit**. For a team
+this size that is usually simpler anyway.
+
+*(If you would rather use real email addresses, delete the `loginDomain` line from
+`firebase-config.js`. Accounts created with real addresses keep working either way.)*
 
 ## 7. Bootstrap your own planner profile
 
@@ -62,16 +78,20 @@ so create the first one by hand:
 
 1. Firestore Database → **Data** tab → **Start collection**.
 2. Collection ID: `users` → **Next**.
-3. Document ID: **your email address, all lower case** (e.g. `nanda@amc.ae`).
+3. Document ID: **the full completed address, all lower case** — i.e. the same thing
+   you typed in step 6, e.g. `nanda@r2200.local`.
 4. Add these fields, then **Save**:
 
 | Field | Type | Value |
 |---|---|---|
-| `email` | string | your email, lower case |
+| `email` | string | `nanda@r2200.local` (same as the document ID) |
 | `name` | string | your name as it should show in the app |
 | `role` | string | `planner` |
 | `areas` | array | *(leave empty)* |
 | `rev` | number | `1` |
+
+> The document ID must be the **full** `name@r2200.local`, not just the name — that is
+> what the app and the security rules look up.
 
 Everyone else you add from inside the app (step 9) — this hand-made one is only
 needed to get started.
@@ -95,9 +115,10 @@ window.R2200_FIREBASE = {
 
 ## 9. Add the rest of the team
 
-Open the app → sign in with your email → **Setup → Users & area scoping** →
-add each person with **the same email address you created in step 6**, their role
-(Planning / Site Engineer / Viewer) and, for engineers, their areas → **Save**.
+Open the app → sign in with **your name** → **Setup → Users & area scoping** →
+add each person with **the same sign-in name you created in step 6** (just the name —
+the app adds the domain), their role (Planning / Site Engineer / Viewer) and, for
+engineers, their areas → **Save**.
 
 Someone who signs in without a profile here is refused with a clear message —
 that is the intended behaviour, not a fault.
@@ -125,7 +146,8 @@ nothing to enter a card for unless you choose to upgrade.
 
 | Symptom | Cause / fix |
 |---|---|
-| "No profile for …" on sign-in | The address has an Auth account but no `users/{email}` document. Add it under Setup → Users (or check for a typo / capital letters — profile IDs are lower case). |
+| "No profile for …" on sign-in | The account exists in Authentication but has no `users/{name@r2200.local}` document. Add it under Setup → Users (or check for a typo — profile IDs are lower case, and a space in a name becomes a dot). |
+| "Name or password not recognised" | No Auth account for that completed address. Check Authentication → Users shows exactly `thatname@r2200.local`. |
 | "Missing or insufficient permissions" | The rules were not published, or the signed-in person has no profile. Redo step 5 / step 7. |
 | "Could not load the Firebase SDK" | No internet at that moment, or a blocked CDN. The app keeps working offline; it reconnects by itself. If it never connects, set a different `sdkVersion` in `firebase-config.js`. |
 | Pill stays "Offline" with a queue | Not signed in, or no connection. Sign in; the queue clears itself. |
