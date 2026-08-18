@@ -3713,20 +3713,21 @@ function bandRow(parent, label, sub, acts, ix, px, opts) {
 }
 
 /* ---------- models ---------- */
-function roadsModel() {
+function roadsModel(pred) {
   const R = {};
   ST.BL.acts.forEach(a => {
     if (a.i.indexOf('CON-') !== 0 || !a.roadCode) return;
+    if (pred && !pred(a)) return;
     const r = R[a.roadCode] = R[a.roadCode] || { code: a.roadCode, name: a.road, zone: a.zone || '', acts: [] };
     if (a.zone && !r.zone) r.zone = a.zone;
     r.acts.push(a);
   });
   return Object.keys(R).sort().map(k => R[k]);
 }
-function svcModel() {
+function svcModel(pred) {
   const out = [];
   SVC_PARTS.forEach(p => {
-    const acts = ST.BL.acts.filter(a => a.i.indexOf('CON-') === 0 && a.boq === p.b);
+    const acts = ST.BL.acts.filter(a => a.i.indexOf('CON-') === 0 && a.boq === p.b && (!pred || pred(a)));
     if (!acts.length) return;
     /* run = ID minus the trailing -NNNN counter, within a zone */
     const runs = {};
@@ -3747,6 +3748,134 @@ function runLabel(run) {
   if (pre.length < 6) pre = run.key.replace('CON-', '');
   const q = run.acts.reduce((m, a) => (a.u === 'm' && a.q > (m.q || 0)) ? { q: a.q, u: a.u } : m, {});
   return { t: pre, q: q.q ? nf(q.q, 0) + ' m' : run.acts.length + ' act' + (run.acts.length > 1 ? 's' : '') };
+}
+
+/* ============================================================
+   ROADS & SERVICES — filter bar
+   Mode-aware: ROAD WORKS filters by road / road type / position on road,
+   SERVICES filters by utility. Both modes share section, zone, type of
+   work, status and a free-text search. Option lists CASCADE — each list
+   counts what is still reachable under the OTHER active filters, so a
+   dead end is visible before it is picked. The filter drives the bands,
+   the roll-ups AND the printed sheet, so filter-then-print yields a
+   road-specific or service-specific pack.
+   ============================================================ */
+const SVC_BY_B = {}; SVC_PARTS.forEach(p => SVC_BY_B[p.b] = p);
+const RD_STATS = [
+  { v: 'ns', t: 'Not started' }, { v: 'wip', t: 'Under work' },
+  { v: 'done', t: 'Complete' }, { v: 'behind', t: 'Behind plan' }
+];
+const RD_FILTERS = [
+  { k: 'zg',    t: 'Section',           md: 'both',  v: a => zoneGroupOf(a.zone) },
+  { k: 'zone',  t: 'Zone',              md: 'both',  v: a => a.zone },
+  { k: 'road',  t: 'Road',              md: 'roads', v: a => a.roadCode, lbl: a => a.roadLbl || a.roadCode },
+  { k: 'rtype', t: 'Road type',         md: 'roads', v: a => a.rtype },
+  { k: 'svc',   t: 'Position on road',  md: 'roads', v: a => a.svc },
+  { k: 'boq',   t: 'Service',           md: 'svc',   v: a => a.boq, lbl: a => (SVC_BY_B[a.boq] || {}).t || a.boq },
+  { k: 'disc',  t: 'Type of work',      md: 'both',  v: a => a.disc }
+];
+function rdDims(mode) { return RD_FILTERS.filter(d => d.md === 'both' || d.md === mode); }
+/** every activity this tab can draw in this mode — the denominator */
+function rdBase(mode) {
+  return ST.BL.acts.filter(a => a.i.indexOf('CON-') === 0 &&
+    (mode === 'svc' ? !!SVC_BY_B[a.boq] : !!a.roadCode));
+}
+/** status bucket test — 'behind' is orthogonal to the stage buckets on purpose */
+function rdStatHit(a, want, ix, px) {
+  if (!want) return true;
+  const v = ix[a.i] ? ix[a.i].a : 0, p = px[a.i] ? px[a.i].a : 0;
+  if (want === 'done')   return v >= 99.995;
+  if (want === 'wip')    return v > 0 && v < 99.995;
+  if (want === 'ns')     return v <= 0;
+  if (want === 'behind') return v - p < -0.005;
+  return true;
+}
+/** does an activity pass every roads filter except `skip`? */
+function rdPasses(a, f, mode, ix, px, skip) {
+  for (const d of rdDims(mode)) {
+    if (d.k === skip) continue;
+    if (f[d.k] && d.v(a) !== f[d.k]) return false;
+  }
+  if (skip !== 'stat' && !rdStatHit(a, f.stat, ix, px)) return false;
+  if (skip !== 'q' && f.q && (a.i + ' ' + a.n).toLowerCase().indexOf(f.q.toLowerCase()) < 0) return false;
+  return true;
+}
+/** label for a chip: reuse the dimension's own labeller so codes read as names */
+function rdChipLbl(d, val, base) {
+  if (!d.lbl) return val;
+  const hit = base.filter(a => d.v(a) === val)[0];
+  return hit ? d.lbl(hit) : val;
+}
+function rdFilterBar(mode, f, ix, px, onChange) {
+  const base = rdBase(mode);
+  const card = el('div', { class: 'card noprint', style: 'margin-bottom:12px' });
+  card.appendChild(el('div', { class: 'mini', style: 'margin:0 0 6px' },
+    mode === 'svc' ? 'Filter — services' : 'Filter — road works'));
+  const grid = el('div', { class: 'grid g4' });
+
+  rdDims(mode).forEach(d => {
+    const seen = {};
+    base.forEach(a => {
+      const v = d.v(a); if (!v) return;
+      if (!rdPasses(a, f, mode, ix, px, d.k)) return;
+      if (!seen[v]) seen[v] = { n: 0, lbl: d.lbl ? d.lbl(a) : v };
+      seen[v].n++;
+    });
+    const keys = Object.keys(seen).sort();
+    if (!keys.length && !f[d.k]) {
+      const dead = sel([{ v: '', t: '— none under this filter —' }], '', null);
+      dead.disabled = true; grid.appendChild(fld(d.t, dead)); return;
+    }
+    const tot = keys.reduce((s, k) => s + seen[k].n, 0);
+    const opts = [{ v: '', t: '— any —  (' + tot + ')' }]
+      .concat(keys.map(k => ({ v: k, t: seen[k].lbl + '  (' + seen[k].n + ')' })));
+    if (f[d.k] && !seen[f[d.k]]) opts.push({ v: f[d.k], t: rdChipLbl(d, f[d.k], base) + '  (0)' });
+    grid.appendChild(fld(d.t, sel(opts, f[d.k] || '', v => { f[d.k] = v; onChange(); })));
+  });
+
+  /* status counted the same cascading way */
+  const sc = {}; RD_STATS.forEach(s => sc[s.v] = 0);
+  let nAny = 0;
+  base.forEach(a => {
+    if (!rdPasses(a, f, mode, ix, px, 'stat')) return;
+    nAny++;
+    RD_STATS.forEach(s => { if (rdStatHit(a, s.v, ix, px)) sc[s.v]++; });
+  });
+  grid.appendChild(fld('Status', sel(
+    [{ v: '', t: '— any —  (' + nAny + ')' }].concat(RD_STATS.map(s => ({ v: s.v, t: s.t + '  (' + sc[s.v] + ')' }))),
+    f.stat || '', v => { f.stat = v; onChange(); })));
+  grid.appendChild(fld('Search ID or description',
+    inp('text', f.q || '', v => { f.q = v; onChange(true); })));
+  card.appendChild(grid);
+
+  /* count + active chips */
+  const shown = base.filter(a => rdPasses(a, f, mode, ix, px)).length;
+  const active = rdDims(mode).filter(d => f[d.k]);
+  const nSel = active.length + (f.stat ? 1 : 0) + (f.q ? 1 : 0);
+  const bar = el('div', { class: 'row', style: 'margin-top:8px;align-items:center' });
+  const cnt = el('span', { class: 'tag' });
+  /* the body can redraw on its own (search keystrokes) — let it refresh this
+     count in place rather than leaving a stale figure above the bands */
+  card.rdSetCount = n => {
+    cnt.style.color = n ? '' : '#FF0000';
+    cnt.innerHTML = 'Showing <b>' + n + '</b> of <b>' + base.length + '</b> activities';
+  };
+  card.rdSetCount(shown);
+  bar.appendChild(cnt);
+  if (nSel) bar.appendChild(el('button', {
+    class: 'btn sm', onclick: () => { RD_FILTERS.forEach(d => delete f[d.k]); f.stat = ''; f.q = ''; onChange(); }
+  }, '✕ Clear all (' + nSel + ')'));
+  active.forEach(d => bar.appendChild(el('span', {
+    class: 'tag o', style: 'cursor:pointer', title: 'Remove this filter',
+    onclick: () => { delete f[d.k]; onChange(); }
+  }, d.t + ': ' + rdChipLbl(d, f[d.k], base) + ' ✕')));
+  if (f.stat) bar.appendChild(el('span', { class: 'tag o', style: 'cursor:pointer', title: 'Remove this filter',
+    onclick: () => { f.stat = ''; onChange(); } },
+    'Status: ' + ((RD_STATS.filter(s => s.v === f.stat)[0] || {}).t || f.stat) + ' ✕'));
+  if (f.q) bar.appendChild(el('span', { class: 'tag o', style: 'cursor:pointer', title: 'Remove this filter',
+    onclick: () => { f.q = ''; onChange(); } }, 'Search: ' + f.q + ' ✕'));
+  card.appendChild(bar);
+  return card;
 }
 
 /* ---------- the view ---------- */
@@ -3771,6 +3900,18 @@ function vRoads(m) {
     }, o[1]));
   });
   m.appendChild(tb);
+
+  /* filter — persisted per mode so switching modes keeps each side's picks */
+  const fKey = 'rdFilters_' + mode;
+  const f = (ST.rdF && ST.rdF._k === fKey) ? ST.rdF
+          : (ST.rdF = Object.assign({ _k: fKey }, DB.getMeta(fKey, {})));
+  const saveF = () => { const o = Object.assign({}, f); delete o._k; DB.setMeta(fKey, o); };
+  const fcard = rdFilterBar(mode, f, ix, px, bodyOnly => {
+    saveF();
+    if (bodyOnly) drawBody(); else render();
+  });
+  m.appendChild(fcard);
+  const pred = a => rdPasses(a, f, mode, ix, px);
 
   /* compact print legend (inline-SVG swatches — survive Background-graphics OFF) */
   const printLegend = (stages) => {
@@ -3813,9 +3954,21 @@ function vRoads(m) {
 
   const secHead = t => el('div', { class: 'bridgeband' }, [el('h3', {}, t)]);
 
+  /* the bands live in their own wrapper so a keystroke in the search box
+     redraws only these — the filter card (and its focus) survives */
+  const body = el('div');
+  m.appendChild(body);
+  drawBody();
+
+  function drawBody() {
+  body.innerHTML = '';
+  if (fcard.rdSetCount) fcard.rdSetCount(rdBase(mode).filter(pred).length);
+  const m = body;                       // the branches below append to the body
+  let drew = 0;
+
   if (mode === 'svc') {
     /* ---------------- SERVICES ---------------- */
-    svcModel().forEach(S => {
+    svcModel(pred).forEach(S => {
       const c = el('div', { class: 'card pv-page rdcard', style: 'margin-bottom:12px;border-left:5px solid ' + S.part.c });
       c.appendChild(printLegend(SVC_STAGES));
       const r0 = rollup2(S.acts, ix, px);
@@ -3835,11 +3988,11 @@ function vRoads(m) {
         bandRow(c, L.t, L.q, run.acts, ix, px,
           { stageFn: svcStageOf, stageList: SVC_STAGES, gtitle: S.part.t + ' · ' + run.zone + ' — ' + L.t });
       });
-      m.appendChild(c);
+      m.appendChild(c); drew++;
     });
   } else {
     /* ---------------- ROAD WORKS ---------------- */
-    const roads = roadsModel();
+    const roads = roadsModel(pred);
     const groups = {};
     roads.forEach(r => (groups[zoneGroupOf(r.zone)] = groups[zoneGroupOf(r.zone)] || []).push(r));
     ZG_ORDER.filter(g => groups[g]).forEach(g => {
@@ -3889,8 +4042,16 @@ function vRoads(m) {
             { stageFn: rdStageOf, stageList: RD_STAGES, gtitle: r.code + ' — other works' });
         }
       });
-      m.appendChild(c);
+      m.appendChild(c); drew++;
     });
+  }
+
+  if (!drew) m.appendChild(el('div', { class: 'card', style: 'text-align:center;color:#5B493C' }, [
+    el('h3', {}, 'Nothing matches this filter'),
+    el('div', { class: 'housenote' }, [el('span', { class: 'k' }, 'Note'),
+      'No activity in the ' + (mode === 'svc' ? 'services' : 'road works') +
+      ' view passes every filter above. Clear one — the counts in each list show ' +
+      'what is still reachable.'])]));
   }
 }
 /* small cost-weighted rollup for a pool (actual + planned early) */
