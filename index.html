@@ -63,6 +63,16 @@ button,input,select,textarea{font:inherit;color:inherit}
 .g3{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
 .g4{grid-template-columns:repeat(auto-fit,minmax(175px,1fr))}
 .g5{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+/* PLANNED EARLY | PLANNED LATE over a centred ACTUAL. The bottom panel is
+   given exactly one top-panel's width so all three drawings read at the
+   same scale and the actual sits square between the two above it. */
+.pva3top{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start}
+.pva3bot{display:flex;justify-content:center;margin-top:10px}
+.pva3bot>.pvapane{width:calc(50% - 5px)}
+@media(max-width:900px){
+  .pva3top{grid-template-columns:1fr}
+  .pva3bot>.pvapane{width:100%}
+}
 
 .card{background:var(--card);border:1px solid var(--tan);border-radius:var(--rad);
   padding:13px 14px;box-shadow:var(--sh)}
@@ -197,6 +207,9 @@ canvas{display:block;width:100%}
   .pvasvg{height:430px!important;width:100%!important;min-width:0!important;max-width:none!important}
   .pvagrid .upsvg{height:300px!important}
   .pvagrid{gap:6px!important}
+  .pva3top{gap:6px!important}
+  .pva3bot{margin-top:6px!important}
+  .pva3 .pvasvg{height:250px!important}
   .fitsheet{zoom:.77}
   .fitsheet .ovsvg{height:295px!important}
   .fitsheet .orow{grid-template-columns:minmax(330px,430px) 1fr!important;gap:10px!important;margin-bottom:2px!important}
@@ -915,12 +928,15 @@ function plannedPct(a, dd, late) {
 }
 
 /* ---------- planned-% index at a date ----------
-   Same shape as actualIndex ({actId:{a:pct}}) but from the BASELINE EARLY
-   dates (issued S-curve aligned) — used by the Planned-vs-Actual drawings,
-   so the same colouring functions render either side untouched. ---------- */
-function plannedIndex(dd) {
+   Same shape as actualIndex ({actId:{a:pct}}) but from the BASELINE dates
+   (issued S-curve aligned) — used by the Planned-vs-Actual drawings, so the
+   same colouring functions render every panel untouched.
+   late=false reads the EARLY dates (es/ef), late=true the LATE dates (ls/lf):
+   the same activity, the same shape, read against the other end of its
+   float. ---------- */
+function plannedIndex(dd, late) {
   const px = {};
-  ST.BL.acts.forEach(a => { const v = plannedPct(a, dd, false); if (v > 0.005) px[a.i] = { a: v }; });
+  ST.BL.acts.forEach(a => { const v = plannedPct(a, dd, !!late); if (v > 0.005) px[a.i] = { a: v }; });
   return px;
 }
 
@@ -3431,7 +3447,7 @@ function vStruct(m) {
   const mode = ST.structMode || (ST.structMode = DB.getMeta('structMode', '3d'));
   const tb = el('div', { class: 'row noprint', style: 'gap:8px;margin-bottom:12px;flex-wrap:wrap' });
   [['3d', '🧊 3D — bridge by bridge'], ['iso', '🌉 3D OVERVIEW — all bridges in one'],
-   ['sheet', '📐 Elevation sheet (Rev.01 layout)'], ['pva', '⚖ PLANNED vs ACTUAL — side by side']].forEach(o => {
+   ['sheet', '📐 Elevation sheet (Rev.01 layout)'], ['pva', '⚖ PLANNED EARLY vs LATE vs ACTUAL']].forEach(o => {
     tb.appendChild(el('button', {
       class: 'btn', style: mode === o[0] ? 'background:#EF6925;color:#fff;border-color:#EF6925' : '',
       onclick: () => { ST.structMode = o[0]; DB.setMeta('structMode', o[0]); render(); }
@@ -3497,7 +3513,8 @@ function vStruct(m) {
        LEFT = where the baseline EARLY dates say the work should be at the
        cut-off (view-only, computed from the issued programme — no records);
        RIGHT = the live actual from entered progress (clickable as usual). ---- */
-    const px = plannedIndex(ST.dataDate);
+    const px = plannedIndex(ST.dataDate, false);      // baseline EARLY dates
+    const pl = plannedIndex(ST.dataDate, true);       // baseline LATE dates
     const cwPct = (acts, index) => { let cw = 0, cs = 0, n = 0, ps = 0;
       acts.forEach(a => { const v = index[a.i] ? index[a.i].a : 0; const w = a.c > 0 ? a.c : 0;
         cw += w; cs += w * v; n++; ps += v; });
@@ -3509,27 +3526,44 @@ function vStruct(m) {
       el('div', { class: 'v', style: 'color:' + col }, val),
       el('div', { class: 'c' }, cap)
     ]);
+    /* EARLY and LATE planned models side by side, ACTUAL centred beneath them.
+       All three are the same drawing read against a different index, so the
+       element colouring, the click targets and the member counts are the
+       shared code — only the index changes. The two planned panels share a
+       slate family so they read as a pair; actual keeps the orange accent. */
     _pvaBlock = (c, acts, drawFn) => {
-      const pp = cwPct(acts, px), ap = cwPct(acts, ix), vv = ap - pp;
-      const strip = el('div', { class: 'grid g3 cmpk', style: 'margin:0 0 8px' });
+      const pp = cwPct(acts, px), lp = cwPct(acts, pl), ap = cwPct(acts, ix);
+      const vE = ap - pp, vL = ap - lp;
+      const strip = el('div', { class: 'grid g5 cmpk', style: 'margin:0 0 8px' });
       strip.appendChild(vKpi('PLANNED — EARLY', n2(pp) + '%', '#355056', 'baseline early dates @ cut-off'));
+      strip.appendChild(vKpi('PLANNED — LATE', n2(lp) + '%', '#5B7C99', 'baseline late dates @ cut-off'));
       strip.appendChild(vKpi('ACTUAL', n2(ap) + '%', 'var(--org)', 'entered progress @ cut-off'));
-      strip.appendChild(vKpi('VARIANCE', (vv >= 0 ? '+' : '') + n2(vv) + '%',
-        vv < -0.005 ? '#FF0000' : '#1E7A3C', vv < -0.005 ? 'behind planned' : 'ahead / on plan'));
+      strip.appendChild(vKpi('VS EARLY', (vE >= 0 ? '+' : '') + n2(vE) + '%',
+        vE < -0.005 ? '#FF0000' : '#1E7A3C', vE < -0.005 ? 'behind the early dates' : 'ahead / on the early dates'));
+      strip.appendChild(vKpi('VS LATE', (vL >= 0 ? '+' : '') + n2(vL) + '%',
+        vL < -0.005 ? '#FF0000' : '#1E7A3C', vL < -0.005 ? 'float used up — late' : 'within float'));
       c.appendChild(strip);
-      const g = el('div', { class: 'pvagrid', style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start' });
-      const L = el('div', {}), R = el('div', {});
-      L.appendChild(colHead('PLANNED — EARLY DATES · ' + dmy(ST.dataDate), '#355056'));
-      R.appendChild(colHead('ACTUAL · ' + dmy(ST.dataDate), '#EF6925'));
-      _PIX = true; drawFn(L, px); _PIX = false;
-      drawFn(R, ix);
-      [L, R].forEach((side, si) => side.querySelectorAll('svg').forEach(sv2 => {
+
+      const g = el('div', { class: 'pvagrid pva3' });
+      const pane = (key, head, col) => {
+        const d = el('div', { class: 'pvapane' }); d.setAttribute('data-pane', key);
+        d.appendChild(colHead(head + ' · ' + dmy(ST.dataDate), col));
+        return d;
+      };
+      const E = pane('early',  'PLANNED — EARLY DATES', '#355056');
+      const L = pane('late',   'PLANNED — LATE DATES',  '#5B7C99');
+      const A = pane('actual', 'ACTUAL',                '#EF6925');
+      _PIX = true; drawFn(E, px); drawFn(L, pl); _PIX = false;
+      drawFn(A, ix);
+      [[E, 1], [L, 1], [A, 0]].forEach(([side, viewOnly]) => side.querySelectorAll('svg').forEach(sv2 => {
         if (!sv2.getAttribute('viewBox')) return;
         sv2.classList.add('pvasvg'); sv2.setAttribute('preserveAspectRatio', 'xMidYMid meet');
         sv2.style.minWidth = '0'; sv2.style.maxWidth = 'none'; sv2.style.width = '100%'; sv2.style.height = '360px';
-        if (si === 0) sv2.style.pointerEvents = 'none';   // planned side is view-only
+        if (viewOnly) sv2.style.pointerEvents = 'none';   // planned panels are view-only
       }));
-      g.appendChild(L); g.appendChild(R);
+      const top = el('div', { class: 'pva3top' }, [E, L]);
+      const bot = el('div', { class: 'pva3bot' }, [A]);
+      g.appendChild(top); g.appendChild(bot);
       c.appendChild(g);
     };
     SM.BRIDGES.forEach(B => {
@@ -3587,14 +3621,18 @@ function vStruct(m) {
        actual side's on screen but out of the printed sheet (Basis note prints) */
     const gEl = cu.querySelector('.pvagrid');
     if (gEl) {
-      gEl.children[0].querySelectorAll('.housenote').forEach(x => x.remove());
-      gEl.children[1].querySelectorAll('.housenote').forEach(x => x.classList.add('noprint'));
+      gEl.querySelectorAll('[data-pane="early"] .housenote, [data-pane="late"] .housenote')
+        .forEach(x => x.remove());
+      gEl.querySelectorAll('[data-pane="actual"] .housenote')
+        .forEach(x => x.classList.add('noprint'));
     }
     cu.appendChild(el('div', { class: 'housenote' }, [el('span', { class: 'k' }, 'Basis'),
-      'LEFT = planned status from the baseline EARLY dates at the cut-off (activity planned % from the issued ' +
-      'programme / S-curve — view-only, no records behind it). RIGHT = actual from the entered progress, clickable ' +
-      'as usual. Variance = actual − planned, cost-weighted; negative (red) = behind the early plan. Individual ' +
-      'planned member counts (Pile n/N) are floored from the group planned % — never overstated.']));
+      'TOP LEFT = planned status from the baseline EARLY dates at the cut-off; TOP RIGHT = the same model read ' +
+      'against the baseline LATE dates. Both are view-only, with no records behind them — the activity planned % ' +
+      'comes from the issued programme / S-curve. BELOW = actual from the entered progress, clickable as usual. ' +
+      'Actual between the two planned models means the work is inside its float; below the LATE model means the ' +
+      'float is used up and the work is late. Variance is cost-weighted. Individual planned member counts ' +
+      '(Pile n/N) are floored from the group planned % — never overstated.']));
   } else {
     drawUnderpass(cu, SM.UP, ix);
     cu.appendChild(el('div', { class: 'housenote' }, [el('span', { class: 'k' }, 'Basis'),
