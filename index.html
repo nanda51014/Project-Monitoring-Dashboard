@@ -5375,8 +5375,9 @@ function xerImportCard() {
     el('button', { class: 'btn p', onclick: importProgressXER }, '⬆ Import PROGRESS-UPDATED XER'),
     el('div', { class: 'mini', style: 'margin-top:5px' },
       'Reads Physical % at the XER data date and books it as progress records — drawings, dashboards and layouts ' +
-      'update immediately. Higher of site/XER governs; every mismatch is flagged with a per-row "Force XER" for ' +
-      'downward corrections. Sets the app data date to the XER data date.')]));
+      'update immediately. The HIGHER of the site reading and the XER governs, applied to every activity ' +
+      'automatically — nothing to tick. One switch on the review screen lets the XER correct readings down ' +
+      'instead, for when it is the corrected record. Sets the app data date to the XER data date.')]));
   c.appendChild(g);
   if (ov) c.appendChild(el('button', { class: 'btn sm', style: 'margin-top:9px', onclick: () =>
     ask('Revert to the built-in baseline', 'This device goes back to the baseline shipped inside the app (' +
