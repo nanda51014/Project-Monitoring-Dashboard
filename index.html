@@ -5236,6 +5236,33 @@ async function reloadBaselineInPlace() {
 /* ============================================================
    PROGRESS IMPORT (Physical %)
    ============================================================ */
+/* ---------- which XER rows become progress records ----------
+   THE HIGHER RULE: for every activity the higher of the site reading and the
+   XER's Physical % governs. It is applied to the whole file automatically —
+   there is nothing to tick row by row. A record is written only where the XER
+   RAISES the reading; where the site is already higher its own record stands
+   and the import leaves it alone, which is exactly what keeps it higher.
+
+   correctDown is the deliberate exception, off unless asked for: the XER
+   becomes authoritative for the whole file and may pull a reading DOWN,
+   pinned with ov:1 so site entries dated after it build on top of it. */
+function xerProgressRecords(rows, dd, label, correctDown) {
+  const out = [];
+  (rows || []).forEach(r => {
+    const raises = r.xer > 0.05 && r.xer - r.app > 0.05;
+    const lowers = !!correctDown && r.app - r.xer > 0.05;
+    if (!raises && !lowers) return;
+    const rec = { id: uid(), date: dd, actId: r.id, pct: r.xer, mode: 'pct',
+      area: (ST.BL.byId[r.id] || {}).area || '', user: ST.user ? ST.user.id : '',
+      dev: ST.deviceId, src: 'xer',
+      note: 'Imported from ' + label + (lowers ? ' (XER corrected the reading down)' : ''),
+      rev: Date.now() };
+    if (lowers) rec.ov = 1;                 // only a downward correction needs pinning
+    out.push(rec);
+  });
+  return out;
+}
+
 function importProgressXER() {
   pickXER((T, fname2) => {
     if (!T.TASK || !T.PROJECT) return toast('Not a valid XER — TASK / PROJECT tables missing.', true);
@@ -5265,20 +5292,21 @@ function importProgressXER() {
     kv('Activities with Physical % in the file', String(withProg.length));
     kv('Matched to the baseline', rows.length + ' of ' + T.TASK.length);
     if (unmatched.length) kv('⚠ Progressed activities NOT in the baseline (skipped)', String(unmatched.length), true);
-    kv('Conflicts — site reading ≠ XER %', String(conflicts.length), conflicts.length > 0);
+    kv('Will be raised by the XER', String(rows.filter(r => r.xer > 0.05 && r.xer - r.app > 0.05).length));
+    kv('Site reading kept (site ahead of the XER)', String(rows.filter(r => r.siteHigher).length));
 
-    b.appendChild(el('div', { class: 'note b', style: 'margin-top:8px' },
-      '<b>Rule (your call):</b> the HIGHER of the two governs and every mismatch below is flagged. ' +
-      'Tick <b>Force XER</b> on a row to make the XER value authoritative — it then corrects the reading ' +
-      'DOWN as well, and site entries dated after ' + dmy(dd) + ' build on top of it. Nothing is deleted; ' +
-      'the audit log keeps every entry.'));
+    b.appendChild(el('div', { class: 'note b', style: 'margin-top:8px', html:
+      '<b>The higher of the two always wins</b> — applied to every activity automatically, with nothing to ' +
+      'tick. Where the XER is ahead it raises the reading; where the site is ahead the site reading is kept. ' +
+      'The table below is what will happen, not a decision to make. Nothing is deleted; the audit log keeps ' +
+      'every entry.' }));
 
     if (conflicts.length) {
       const tw = el('div', { class: 'tw scroll', style: 'max-height:260px;margin-top:8px' });
       const tb = el('table', {});
       const thr = el('tr', {});
-      ['Activity', 'Site %', 'XER %', 'Higher', 'Force XER'].forEach((h, i2) =>
-        thr.appendChild(el('th', { class: i2 ? 'n' : '' }, h)));
+      ['Activity', 'Site %', 'XER %', 'Applied', 'What happens'].forEach((h, i2) =>
+        thr.appendChild(el('th', { class: i2 && i2 < 4 ? 'n' : '' }, h)));
       tb.appendChild(el('thead', {}, thr));
       const tbody = el('tbody', {});
       conflicts.forEach(r => {
@@ -5286,45 +5314,42 @@ function importProgressXER() {
         tr.appendChild(el('td', { style: 'font-size:11px' }, r.id + ' — ' + r.n));
         tr.appendChild(el('td', { class: 'n' }, n2(r.app)));
         tr.appendChild(el('td', { class: 'n' }, n2(r.xer)));
-        tr.appendChild(el('td', { class: 'n', style: r.siteHigher ? 'color:#D2600F;font-weight:700' : '' },
-          r.siteHigher ? 'SITE' : 'XER'));
-        const cb = el('input', { type: 'checkbox' });
-        cb.addEventListener('change', () => r.force = cb.checked);
-        const td = el('td', { class: 'n' }); td.appendChild(cb);
-        tr.appendChild(td);
+        tr.appendChild(el('td', { class: 'n', style: 'font-weight:700;color:' + (r.siteHigher ? '#D2600F' : '#1E7A3C') },
+          n2(Math.max(r.app, r.xer))));
+        tr.appendChild(el('td', { style: 'font-size:11px' },
+          r.siteHigher ? 'site reading kept — XER is behind' : 'XER raises it'));
         tbody.appendChild(tr);
       });
       tb.appendChild(tbody); tw.appendChild(tb);
       b.appendChild(tw);
-      b.appendChild(el('button', { class: 'btn sm', style: 'margin-top:6px', onclick: (ev) => {
-        conflicts.forEach(r => { if (r.siteHigher) r.force = true; });
-        tw.querySelectorAll('tbody tr').forEach((tr, i2) => {
-          const cb = tr.querySelector('input'); if (cb && conflicts[i2]) cb.checked = conflicts[i2].force;
-        });
-      } }, 'Tick all rows where SITE is higher (accept the XER correction)'));
     }
+
+    /* The exception, as ONE switch for the whole file rather than a tick per
+       row: let this XER pull readings DOWN where the site is ahead of it. */
+    const cdWrap = el('label', { style: 'display:flex;gap:8px;align-items:flex-start;margin-top:10px;cursor:pointer' });
+    /* the app styles every input width:100% for its form fields, which would
+       stretch this box across the whole row — pin it back to a checkbox */
+    const cd = el('input', { type: 'checkbox',
+      style: 'width:16px;height:16px;min-width:16px;padding:0;margin:3px 0 0;flex:0 0 auto' });
+    cdWrap.appendChild(cd);
+    cdWrap.appendChild(el('span', { style: 'font-size:12px;flex:1 1 auto', html:
+      'Let this XER correct readings <b>DOWN</b> as well (' + conflicts.filter(r => r.siteHigher).length +
+      ' activities where the site is ahead). Overrides the higher rule for the whole file — use it only when ' +
+      'the XER is known to be the corrected record. Site entries dated after ' + dmy(dd) + ' still build on top.' }));
+    b.appendChild(cdWrap);
 
     modal('Import progress XER — review before applying', b, [
       { t: 'Cancel', c: 'btn gh', f: closeModal },
       { t: 'Import', c: 'btn p', f: () => {
         closeModal();
-        let n = 0, nf = 0;
-        rows.forEach(r => {
-          const mustWrite = r.force || (r.xer > 0.05 && r.xer - r.app > 0.05);
-          if (!mustWrite) return;
-          const rec = { id: uid(), date: dd, actId: r.id, pct: r.xer, mode: 'pct',
-            area: (ST.BL.byId[r.id] || {}).area || '', user: ST.user ? ST.user.id : '',
-            dev: ST.deviceId, src: 'xer', note: 'Imported from ' + fname2 + (r.force ? ' (forced — XER governs)' : ''),
-            rev: Date.now() };
-          if (r.force) rec.ov = 1;
-          DB.put('progress', rec);
-          n++; if (r.force) nf++;
-        });
+        const recs = xerProgressRecords(rows, dd, fname2, cd.checked);
+        const nDown = recs.filter(r => r.ov).length;
+        recs.forEach(r => DB.put('progress', r));
         DB.setMeta('dataDate', dd); ST.dataDate = dd;
         SYNC.schedule();
         render();
-        toast('Imported ' + n + ' progress record(s) from ' + fname2 +
-          (nf ? ' (' + nf + ' forced to the XER value)' : '') + ' · data date set to ' + dmy(dd));
+        toast('Imported ' + recs.length + ' progress record(s) from ' + fname2 +
+          (nDown ? ' (' + nDown + ' corrected down by the XER)' : '') + ' · data date set to ' + dmy(dd));
       } }
     ]);
   });
