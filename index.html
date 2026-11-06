@@ -36,6 +36,20 @@ button,input,select,textarea{font:inherit;color:inherit}
 #ttl{font-weight:700;font-size:15px;letter-spacing:.2px;line-height:1.15}
 #sub{font-size:11px;color:#9fb3b6}
 #topsp{flex:1}
+/* data-date (cut-off) control — lives in the banner so the whole app can be
+   wound back from anywhere, not just the three views that carry ddBar */
+#ddc{display:flex;align-items:center;gap:4px;background:rgba(255,255,255,.1);
+  border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:3px 5px;flex:0 0 auto}
+#ddc .l{font-size:9px;letter-spacing:.07em;color:#9fb3b6;font-weight:800;padding:0 3px;white-space:nowrap}
+#ddc input[type=date]{width:auto;padding:3px 6px;font-size:12px;line-height:1.3;background:#fff;
+  color:#112528;border:0;border-radius:6px}
+#ddc button{background:transparent;border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:6px;
+  padding:2px 7px;font-size:11px;line-height:1.5;cursor:pointer;width:auto}
+#ddc button:hover{background:rgba(255,255,255,.16)}
+#ddc.past{background:var(--org);border-color:var(--org)}
+#ddc.past .l{color:#fff}
+@media(max-width:860px){#ddc .l{display:none}}
+@media(max-width:640px){#ddc #ddnow,#ddc #ddprev,#ddc #ddnext{display:none}}
 .pill{padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
 .pill.on{background:#1E8F5A;color:#fff}.pill.off{background:#7A8888;color:#fff}
 .pill.q{background:var(--org);color:#fff}
@@ -284,6 +298,13 @@ canvas{display:block;width:100%}
     <div id="logo">R22</div>
     <div><div id="ttl">R2200 SiteTrack</div><div id="sub"></div></div>
     <div id="topsp"></div>
+    <div id="ddc" class="noprint" title="Data date — everything is reported as at this date">
+      <span class="l" id="ddlbl">AS AT</span>
+      <button id="ddprev" type="button" title="Back one week">&#9664;</button>
+      <input id="ddinp" type="date">
+      <button id="ddnext" type="button" title="Forward one week">&#9654;</button>
+      <button id="ddnow" type="button" title="Back to today">Today</button>
+    </div>
     <span id="stat" class="pill off">Offline</span>
     <div id="who"></div>
   </div></div>
@@ -1204,7 +1225,34 @@ function renderNav() {
 function go(v) { ST.view = v; DB.setMeta('lastView', v); render(); window.scrollTo(0, 0); }
 
 /* ---------- shell ---------- */
+/* ---------- data date (cut-off) ----------
+   ST.dataDate is the "as at" date for the whole app: plannedPct() reads the
+   baseline at it and actualIndex(dd) drops progress recorded after it, so
+   setting it back shows the project as it stood that day. One setter so the
+   banner control and the ddBar fields on the dashboards cannot drift. */
+function setDataDate(v) {
+  if (!v) return;
+  ST.dataDate = v; DB.setMeta('dataDate', v);
+  render(); renderTop();
+}
+function syncDDC() {
+  const w = $('#ddc'); if (!w) return;
+  const i = $('#ddinp'); if (i && i.value !== ST.dataDate) i.value = ST.dataDate || '';
+  const back = days(ST.dataDate, iso());          // +ve = cut-off is in the past
+  w.classList.toggle('past', back > 0);
+  const l = $('#ddlbl');
+  if (l) l.textContent = back > 0 ? ('AS AT · ' + back + 'd BACK') : (back < 0 ? 'AS AT · AHEAD' : 'AS AT · TODAY');
+}
+function wireDDC() {
+  const i = $('#ddinp'); if (!i || i._w) return;
+  i._w = 1;
+  i.addEventListener('change', () => setDataDate(i.value));
+  $('#ddprev').addEventListener('click', () => setDataDate(addD(ST.dataDate, -7)));
+  $('#ddnext').addEventListener('click', () => setDataDate(addD(ST.dataDate, 7)));
+  $('#ddnow').addEventListener('click', () => setDataDate(iso()));
+}
 function renderTop() {
+  wireDDC(); syncDDC();
   $('#ttl').textContent = 'R2200 SiteTrack';
   $('#sub').textContent = 'M-523 · Sharjah — ' + (ST.BL ? ST.BL.meta.project : '') + ' baseline';
   const p = DB.pending();
@@ -1854,7 +1902,7 @@ function saveProgress(a, st, cum, date, after) {
 
 /* ---------------- ACTIVITY DETAIL ---------------- */
 function actDetail(a) {
-  const ix = actualIndex()[a.i];
+  const ix = actualIndex(ST.dataDate)[a.i];
   const b = el('div');
   const kv = (k, v) => b.appendChild(el('div', { class: 'kv' }, [el('span', {}, k), el('b', {}, v)]));
   kv('Activity ID', a.i); kv('WBS', (a.w || []).join(' → '));
@@ -2094,7 +2142,7 @@ function vLookahead(m) {
   m.appendChild(filterBar(f, () => render()));
   m.appendChild(el('div', { style: 'height:11px' }));
   const la = lookahead(from, to, a => passes(a, f));
-  const ix = actualIndex();
+  const ix = actualIndex(ST.dataDate);
   if (!la.length) { m.appendChild(el('div', { class: 'empty' }, 'No open activities in this window.')); return; }
   const crit = la.filter(a => a.tf <= 0).length;
   const late = la.filter(a => a.es < from && !(ix[a.i] && ix[a.i].a > 0)).length;
@@ -2448,7 +2496,7 @@ function unmarkMember(mkey, midx, after) {
 function memberDetail(acts, mkey, midx, N, sup, kind) {
   const label = sup + ' — ' + kind + ' ' + midx + ' of ' + N;
   const mk = memberMarker(mkey, midx);
-  const stt = groupStatus(acts, actualIndex());
+  const stt = groupStatus(acts, actualIndex(ST.dataDate));
   const b = el('div');
   b.appendChild(el('div', { class: 'note b' },
     (mk ? '✓ Marked complete ' + dmy(mk.date) + ' by ' + (mk.user || '') : 'Not marked complete') +
@@ -2472,12 +2520,19 @@ function memberDetail(acts, mkey, midx, N, sup, kind) {
 function structDetail(gidOrObj, title) {
   const g = typeof gidOrObj === 'string' ? _SG[gidOrObj] : gidOrObj;
   if (!g) return;
-  const ix = actualIndex();
+  const ix = actualIndex(ST.dataDate);
   const b = el('div');
   const st = groupStatus(g.acts, ix);
   b.appendChild(el('div', { class: 'note b', style: 'margin-bottom:9px' },
     (st ? st.label + ' · ' + n2(st.pct) + '% (cost-weighted)' : '') + ' · ' + g.acts.length + ' activities' +
     (canEdit() ? ' — enter qty or % and Save, or ✓ to complete an activity' : '')));
+  /* the figures above and in the table are read at the cut-off, the same as the
+     drawing this popup was opened from. Say so when that is not today, or a
+     record saved here looks like it did not register. */
+  if (days(ST.dataDate, iso()) > 0) b.appendChild(el('div', { class: 'note r', style: 'margin-bottom:9px', html:
+    'Showing progress up to the data date <b>' + dmy(ST.dataDate) + '</b>. Anything recorded after that date is ' +
+    'not counted in these figures' + (canEdit() ? ', including what you save here today — set the data date back to ' +
+    'today in the banner to see it' : '') + '.' }));
 
   const head = ['Activity ID', 'Description', 'Stage', { t: 'Plan %', n: 1 }, { t: 'Act %', n: 1 }];
   if (canEdit()) head.push('Update (today)');
@@ -4147,7 +4202,7 @@ function rollup2(acts, ix, px) {
 function ddBar(m) {
   const b = el('div', { class: 'card', style: 'margin-bottom:12px' });
   const g = el('div', { class: 'grid g4' });
-  g.appendChild(fld('Data date (cut-off)', inp('date', ST.dataDate, v => { ST.dataDate = v; DB.setMeta('dataDate', v); render(); }, 'yel')));
+  g.appendChild(fld('Data date (cut-off)', inp('date', ST.dataDate, v => setDataDate(v), 'yel')));
   g.appendChild(fld('Report week no.', inp('text', DB.getMeta('weekNo', ''), v => DB.setMeta('weekNo', v), 'yel')));
   g.appendChild(fld('Meeting date', inp('date', DB.getMeta('mtgDate', ''), v => DB.setMeta('mtgDate', v), 'yel')));
   g.appendChild(fld('Baseline', inp('text', ST.BL.meta.project + ' · ' + aedM(ST.BL.BUDGET) + ' · curve: ' + ST.BL.curveSrc, null, '', 1)));
